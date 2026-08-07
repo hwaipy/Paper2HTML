@@ -1,0 +1,5 @@
+# Large local test data. These files are not part of the source repository.
+/testdata/
+
+# Local standalone Markdown reader shared outside the repository.
+/markdown-reader.html

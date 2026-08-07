@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwaipy.github.io/Paper2HTML/schema/1.0/manifest.schema.json",
+  "title": "Paper2HTML Package Manifest 1.0 (Placeholder)",
+  "description": "Temporary placeholder for the Paper2HTML manifest schema. Normative validation constraints will be added in a later revision.",
+  "type": "object"
+}
