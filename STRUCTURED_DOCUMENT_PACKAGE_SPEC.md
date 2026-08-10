@@ -1,6 +1,6 @@
-# Paper2HTML Structured Document Package 1.0
+# Paper2HTML Structured Document Package 0.1
 
-简称：**P2H Package 1.0**
+简称：**P2H Package 0.1**
 
 ## 1. 规范范围
 
@@ -145,9 +145,9 @@ urn:uuid:550e8400-e29b-41d4-a716-446655440000
 
 ```json
 {
-  "$schema": "https://hwaipy.github.io/Paper2HTML/schema/1.0/manifest.schema.json",
+  "$schema": "https://hwaipy.github.io/Paper2HTML/schema/0.1/manifest.schema.json",
   "format": "paper2html-package",
-  "format_version": "1.0",
+  "format_version": "0.1",
   "package_id": "urn:uuid:550e8400-e29b-41d4-a716-446655440000",
   "created_at": "2026-08-07T12:00:00Z",
   "generator": {
@@ -266,13 +266,13 @@ manual
 
 ### 7.1 唯一正文
 
-每个 P2H Package 1.0 必须且只能有一个规范化正文：
+每个 P2H Package 0.1 必须且只能有一个规范化正文：
 
 ```text
 content/document.xml
 ```
 
-V1.0 不允许将章节拆成多个互相独立的规范正文文件。通用阅读器可以按章节建立缓存或索引，但不能要求转换结果提前拆分。
+V0.1 不允许将章节拆成多个互相独立的规范正文文件。通用阅读器可以按章节建立缓存或索引，但不能要求转换结果提前拆分。
 
 ### 7.2 XML 基础规则
 
@@ -283,7 +283,7 @@ XML 必须：
 - well-formed；
 - 图书类文档符合 BITS 2.1；
 - 单篇论文符合 JATS 1.3；
-- 同时符合 P2H Profile 1.0 的额外约束。
+- 同时符合 P2H Profile 0.1 的额外约束。
 
 图书、学位论文和多章节报告使用：
 
@@ -957,7 +957,7 @@ abcdef0123456789...  content/document.xml
 ```json
 {
   "format": "paper2html-validation-report",
-  "format_version": "1.0",
+  "format_version": "0.1",
   "valid": true,
   "validated_at": "2026-08-07T13:00:00Z",
   "checks": {
@@ -1089,15 +1089,15 @@ OUTPUT_ROOT/
 一个结果目录只有同时满足以下条件，才能称为：
 
 ```text
-Paper2HTML Structured Document Package 1.0
+Paper2HTML Structured Document Package 0.1
 ```
 
 条件是：
 
 1. 目录结构符合本规范；
-2. manifest 符合 P2H Manifest Schema 1.0；
+2. manifest 符合 P2H Manifest Schema 0.1；
 3. 正文通过固定版本的 JATS/BITS Schema；
-4. 正文通过 P2H Profile 1.0；
+4. 正文通过 P2H Profile 0.1；
 5. provenance 完整；
 6. 所有页面都有逐页截图，所有内容元素都通过页面引用和区域坐标关联视觉证据；
 7. 所有内部引用和资源路径有效；
