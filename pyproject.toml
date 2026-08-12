@@ -27,6 +27,7 @@ package = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = ["integration: slow tests using ignored persistent source documents and platform OCR"]
 
 [tool.ruff]
 line-length = 110
