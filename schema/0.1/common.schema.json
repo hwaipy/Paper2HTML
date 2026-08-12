@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwaipy.github.io/Paper2HTML/schema/0.1/common.schema.json",
+  "title": "Paper2HTML Package 0.1 Common Definitions",
+  "$defs": {
+    "extensionProperties": {
+      "type": "object",
+      "patternProperties": {
+        "^x-[a-z0-9]+(?:-[a-z0-9]+)*$": true
+      }
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "packagePath": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*//)[a-z0-9._-]+(?:/[a-z0-9._-]+)*$"
+    },
+    "sourceId": {
+      "type": "string",
+      "pattern": "^src-[0-9]{3}$"
+    },
+    "logicalPageId": {
+      "type": "string",
+      "pattern": "^lp-[0-9]{6}$"
+    },
+    "elementId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "languageTag": {
+      "type": "string",
+      "pattern": "^(?:und|[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*)$"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "bbox": {
+      "type": "array",
+      "prefixItems": [
+        { "type": "number", "minimum": 0, "maximum": 1 },
+        { "type": "number", "minimum": 0, "maximum": 1 },
+        { "type": "number", "minimum": 0, "maximum": 1 },
+        { "type": "number", "minimum": 0, "maximum": 1 }
+      ],
+      "items": false,
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "region": {
+      "type": "object",
+      "required": ["bbox"],
+      "properties": {
+        "bbox": { "$ref": "#/$defs/bbox" },
+        "polygon": {
+          "type": "array",
+          "minItems": 3,
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              { "type": "number", "minimum": 0, "maximum": 1 },
+              { "type": "number", "minimum": 0, "maximum": 1 }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      },
+      "patternProperties": {
+        "^x-[a-z0-9]+(?:-[a-z0-9]+)*$": true
+      },
+      "additionalProperties": false
+    }
+  }
+}

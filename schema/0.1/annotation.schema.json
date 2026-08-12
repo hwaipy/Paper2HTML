@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwaipy.github.io/Paper2HTML/schema/0.1/annotation.schema.json",
+  "title": "Paper2HTML Annotation Record 0.1",
+  "description": "Schema for one non-empty line of an annotation layer JSONL file.",
+  "type": "object",
+  "required": ["target_id", "kind", "language"],
+  "properties": {
+    "target_id": { "$ref": "common.schema.json#/$defs/elementId" },
+    "kind": { "enum": ["translation", "definition", "commentary", "reading-note"] },
+    "language": { "$ref": "common.schema.json#/$defs/languageTag" },
+    "content_text": { "type": "string" },
+    "content_xml": { "type": "string", "minLength": 1 }
+  },
+  "oneOf": [
+    {
+      "required": ["content_text"],
+      "properties": {
+        "content_text": { "type": "string" },
+        "content_xml": false
+      }
+    },
+    {
+      "required": ["content_xml"],
+      "properties": {
+        "content_text": false,
+        "content_xml": { "type": "string", "minLength": 1 }
+      }
+    }
+  ],
+  "patternProperties": {
+    "^x-[a-z0-9]+(?:-[a-z0-9]+)*$": true
+  },
+  "additionalProperties": false
+}

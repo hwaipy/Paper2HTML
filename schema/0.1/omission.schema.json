@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwaipy.github.io/Paper2HTML/schema/0.1/omission.schema.json",
+  "title": "Paper2HTML Omission Record 0.1",
+  "description": "Schema for one non-empty line of provenance/omissions.jsonl.",
+  "type": "object",
+  "required": ["id", "source_id", "physical_page", "logical_page_id", "page_image", "bbox", "type", "reason"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^omit-[0-9]{6}$" },
+    "source_id": { "$ref": "common.schema.json#/$defs/sourceId" },
+    "physical_page": { "type": "integer", "minimum": 1 },
+    "logical_page_id": { "$ref": "common.schema.json#/$defs/logicalPageId" },
+    "page_image": {
+      "allOf": [
+        { "$ref": "common.schema.json#/$defs/packagePath" },
+        { "type": "string", "pattern": "^assets/evidence/pages/src-[0-9]{3}/page-[0-9]{6}\\.png$" }
+      ]
+    },
+    "bbox": { "$ref": "common.schema.json#/$defs/bbox" },
+    "type": {
+      "enum": ["page-header", "page-footer", "page-number", "scanner-artifact", "duplicate", "decorative", "blank", "unreadable", "other"]
+    },
+    "reason": { "$ref": "common.schema.json#/$defs/nonEmptyString" }
+  },
+  "patternProperties": {
+    "^x-[a-z0-9]+(?:-[a-z0-9]+)*$": true
+  },
+  "additionalProperties": false
+}

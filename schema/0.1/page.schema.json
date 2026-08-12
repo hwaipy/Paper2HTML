@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwaipy.github.io/Paper2HTML/schema/0.1/page.schema.json",
+  "title": "Paper2HTML Page Record 0.1",
+  "description": "Schema for one non-empty line of provenance/pages.jsonl.",
+  "type": "object",
+  "required": [
+    "source_id",
+    "physical_page",
+    "logical_page_id",
+    "printed_label",
+    "width_pt",
+    "height_pt",
+    "rotation_degrees",
+    "image",
+    "image_width_px",
+    "image_height_px",
+    "render_dpi",
+    "ocr_status"
+  ],
+  "properties": {
+    "source_id": { "$ref": "common.schema.json#/$defs/sourceId" },
+    "physical_page": { "type": "integer", "minimum": 1 },
+    "logical_page_id": { "$ref": "common.schema.json#/$defs/logicalPageId" },
+    "printed_label": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "minLength": 1 }
+      ]
+    },
+    "width_pt": { "type": "number", "exclusiveMinimum": 0 },
+    "height_pt": { "type": "number", "exclusiveMinimum": 0 },
+    "rotation_degrees": { "enum": [0, 90, 180, 270] },
+    "image": {
+      "allOf": [
+        { "$ref": "common.schema.json#/$defs/packagePath" },
+        { "type": "string", "pattern": "^assets/evidence/pages/src-[0-9]{3}/page-[0-9]{6}\\.png$" }
+      ]
+    },
+    "image_width_px": { "type": "integer", "minimum": 1 },
+    "image_height_px": { "type": "integer", "minimum": 1 },
+    "render_dpi": { "const": 300 },
+    "ocr_status": { "enum": ["completed", "no-text", "failed"] }
+  },
+  "patternProperties": {
+    "^x-[a-z0-9]+(?:-[a-z0-9]+)*$": true
+  },
+  "additionalProperties": false
+}

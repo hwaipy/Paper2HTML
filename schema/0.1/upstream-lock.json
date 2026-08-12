@@ -1,0 +1,27 @@
+{
+  "format": "paper2html-upstream-schema-lock",
+  "format_version": "0.1",
+  "schemas": [
+    {
+      "id": "jats-journal-publishing-1.3-mathml2-xsd",
+      "kind": "archive",
+      "url": "https://public.nlm.nih.gov/projects/jats/publishing/1.3/xsd/JATS-Publishing-1-3-MathML2-XSD.zip",
+      "sha256": "0ad7166d839ad1d3337b92d27fc4954e451ef02b1c8ccaeb1cdf52a1c0878c12",
+      "entrypoint": "JATS-Publishing-1-3-MathML2-XSD/JATS-journalpublishing1-3.xsd"
+    },
+    {
+      "id": "bits-2.1-xsd",
+      "kind": "archive",
+      "url": "https://public.nlm.nih.gov/projects/jats/extensions/bits/2.1/xsd/BITS-2-1-XSD.zip",
+      "sha256": "ca027772ed6d69b556ce89053d00b4f96980f7acf0f48759665050f7ae8453ea",
+      "entrypoint": "BITS-2-1-XSD/BITS-book2-1.xsd"
+    },
+    {
+      "id": "w3c-xml-namespace-xsd",
+      "kind": "schema",
+      "url": "https://www.w3.org/2001/xml.xsd",
+      "sha256": "61960fb3131e38022caad5360e2f33a3382578ab3c80cd58bd74320ede61b20c",
+      "namespace": "http://www.w3.org/XML/1998/namespace"
+    }
+  ]
+}

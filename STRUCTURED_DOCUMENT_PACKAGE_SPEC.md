@@ -38,6 +38,9 @@ P2H Package 是一种可移植的结构化文档目录。
 - “原生提取”表示直接读取 PDF 中的文字、字体、路径、图片和结构；
 - “OCR 提取”表示将页面渲染为图像后进行文字及版面识别；
 - “内容元素”表示标题、段落、公式、图片、图注、表格、脚注、参考文献等语义单元；
+- “可寻址内容元素”表示本规范或 P2H Profile 要求具有 XML `id` 的内容元素；
+- “包路径”表示 JSON、JSONL、manifest 或 `checksums.sha256` 中从结果包根目录开始的路径；
+- “XML 资源引用”表示 `content/document.xml` 中相对于该 XML 文件的 `xlink:href`；
 - “结果包根目录”表示包含 `manifest.json` 的目录，在本规范中记为 `OUTPUT_ROOT/`。
 
 ## 3. 标准目录结构
@@ -97,7 +100,7 @@ annotations/
 
 ## 4. 文件和路径规则
 
-结果包内所有路径必须：
+所有包路径必须：
 
 - 使用相对于 `OUTPUT_ROOT/` 的相对路径；
 - 使用 `/` 作为路径分隔符；
@@ -107,6 +110,10 @@ annotations/
 - 大小写敏感；
 - 使用 UTF-8 编码；
 - 在同一结果包内大小写折叠后仍不得重名。
+
+`content/document.xml` 中的 XML 资源引用以 `content/document.xml` 所在目录为基准，必须使用
+`../assets/content/...`。其中开头唯一的 `../` 是从 `content/` 返回结果包根目录，不属于包路径，
+也不违反上述规则；去掉此前缀后的路径不得再包含 `..`。
 
 机器生成文件名必须只使用：
 
@@ -129,13 +136,27 @@ JSON、JSONL 和 XML 文本必须：
 
 ## 5. 结果包标识
 
-每个结果包必须有永久的 `package_id`，格式为 UUID URN：
+每个逻辑文档包必须有稳定的 `package_id`，格式为小写 UUID URN：
 
 ```text
-urn:uuid:550e8400-e29b-41d4-a716-446655440000
+urn:uuid:fd708766-9d5c-52c7-8aa3-0c12faf9d4a9
 ```
 
-重新执行但内容没有变化时，应保留同一 `package_id`。从头创建一个逻辑上不同的转换结果时，必须生成新的 `package_id`。
+P2H 0.1 使用 UUIDv5 确定性地产生 `package_id`：
+
+- 命名空间 UUID 固定为 `6d4d259c-105b-5fee-a87a-efd4ad4d9bf8`，它是以 DNS namespace
+  对 `paper2html.org` 计算得到的 UUIDv5；
+- name 是以下 UTF-8 文本，不带末尾换行：
+
+```text
+paper2html-package:0.1:<primary-source-sha256>
+```
+
+其中 `<primary-source-sha256>` 是 manifest 中唯一 `role: "primary"` 源文件的小写 SHA-256。
+因此，同一主源文件的 P2H 0.1 重跑结果必须保留同一 `package_id`；源文件字节或格式版本改变时，
+`package_id` 必须改变。alternate 和 supplementary 源不参与 0.1 的包身份计算。
+
+`created_at` 表示该次结果目录完成写入的 UTC 时间，必须使用 RFC 3339 `date-time` 格式；它不是包身份的一部分。
 
 ## 6. `manifest.json`
 
@@ -148,7 +169,7 @@ urn:uuid:550e8400-e29b-41d4-a716-446655440000
   "$schema": "https://hwaipy.github.io/Paper2HTML/schema/0.1/manifest.schema.json",
   "format": "paper2html-package",
   "format_version": "0.1",
-  "package_id": "urn:uuid:550e8400-e29b-41d4-a716-446655440000",
+  "package_id": "urn:uuid:fd708766-9d5c-52c7-8aa3-0c12faf9d4a9",
   "created_at": "2026-08-07T12:00:00Z",
   "generator": {
     "name": "paper2html",
@@ -157,19 +178,39 @@ urn:uuid:550e8400-e29b-41d4-a716-446655440000
   "document": {
     "id": "doc-000001",
     "type": "book",
+    "profile": "bits-2.1",
     "language": "en",
     "content": "content/document.xml"
   },
-  "sources": [],
+  "sources": [
+    {
+      "id": "src-001",
+      "role": "primary",
+      "original_name": "book.pdf",
+      "media_type": "application/pdf",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "size": 123456789,
+      "page_count": 848,
+      "source_class": "born-digital",
+      "extraction_modes": ["native-pdf", "ocr"],
+      "embedded_path": null
+    }
+  ],
   "provenance": {
     "pages": "provenance/pages.jsonl",
     "elements": "provenance/elements.jsonl",
     "omissions": "provenance/omissions.jsonl"
   },
+  "annotations": {
+    "index": "annotations/index.json"
+  },
   "validation": "validation/report.json",
   "checksums": "checksums.sha256"
 }
 ```
+
+没有 annotation layer 时必须省略 `annotations`；存在 `annotations/` 时必须包含该字段。
+manifest 及本规范定义的 JSON 对象可以使用名称符合 `x-...` 的扩展字段，其他未定义字段不得出现。
 
 ### 6.2 `document` 字段
 
@@ -182,6 +223,10 @@ thesis
 report
 other
 ```
+
+`document.profile` 必须是 `jats-1.3` 或 `bits-2.1`。`article` 必须使用 `jats-1.3`，`book` 必须使用
+`bits-2.1`；`thesis`、`report` 和 `other` 根据实际 XML 结构明确选择其一。`jats-1.3` 对应根元素
+`<article>`，`bits-2.1` 对应根元素 `<book>`，验证器必须检查三者一致。
 
 `document.language` 必须使用 BCP 47，例如：
 
@@ -229,6 +274,9 @@ primary
 alternate
 supplementary
 ```
+
+manifest 中必须恰好有一个 primary source。primary 固定为 `src-001`；其余 source 按 role
+（alternate、supplementary）以及加入顺序依次编号。所有 source ID 必须唯一。
 
 `source_class` 必须是：
 
@@ -281,14 +329,28 @@ XML 必须：
 - 使用 XML 1.0；
 - 使用 UTF-8；
 - well-formed；
-- 图书类文档符合 BITS 2.1；
-- 单篇论文符合 JATS 1.3；
+- 不为 JATS/BITS 元素声明默认 namespace；
+- 图书类文档符合 BITS 2.1 的固定 XSD；
+- 单篇论文符合 JATS Journal Publishing 1.3 的固定 XSD；
 - 同时符合 P2H Profile 0.1 的额外约束。
+
+固定基线为：
+
+```text
+JATS 1.3  https://jats.nlm.nih.gov/publishing/1.3/xsd/JATS-journalpublishing1-3.xsd
+BITS 2.1  https://jats.nlm.nih.gov/extensions/bits/2.1/xsd/BITS-book2-1.xsd
+```
+
+验证器可以缓存这两个官方 Schema 以便离线运行，但不得静默替换成其他版本；官方发布 archive 的
+下载 URL、SHA-256、内部入口文件及 XML namespace 依赖由 `schema/0.1/upstream-lock.json` 固定。
+P2H Profile 的规范文件是 `schema/0.1/p2h-profile.sch`，必须执行 `full` phase。
 
 图书、学位论文和多章节报告使用：
 
 ```xml
 <book xmlns:xlink="http://www.w3.org/1999/xlink"
+      id="doc-000001"
+      dtd-version="2.1"
       xml:lang="en">
 ```
 
@@ -296,6 +358,8 @@ XML 必须：
 
 ```xml
 <article xmlns:xlink="http://www.w3.org/1999/xlink"
+         id="doc-000001"
+         dtd-version="1.3"
          xml:lang="en"
          article-type="research-article">
 ```
@@ -421,6 +485,9 @@ ID 必须符合：
 
 数字按对应类型在整个文档中的阅读顺序递增。
 
+本表未规定专用前缀的可见元数据元素，例如 `<article-id>`、`<contrib>`、`<name>`、`<aff>`、
+`<pub-date>` 和 `<abstract>`，仍必须使用符合通用 ID 正则且全局唯一的 ID。
+
 例如，印刷编号为“Figure 3.2”的图片可以表示为：
 
 ```xml
@@ -431,7 +498,8 @@ ID 必须符合：
 
 ### 8.3 必须具有 provenance 的元素
 
-以下元素必须有 ID，并且在 `elements.jsonl` 中恰好对应一条记录：
+以下元素必须有 ID，并且在 `elements.jsonl` 中恰好对应一条记录；
+`schema/0.1/p2h-profile.sch` 中 `p2h-addressable-element-id` 的元素集合是这一要求的机器可读定义：
 
 - 所有可见的元数据字段；
 - 所有标题；
@@ -477,7 +545,7 @@ ID 必须符合：
 
 要求：
 
-- LaTeX 必须位于 CDATA；
+- LaTeX 是 `<tex-math>` 的唯一文本内容；建议使用 CDATA 序列化以避免转义，但 CDATA 与普通转义文本在 XML 数据模型中等价；
 - LaTeX 不得包含外层 `$...$`、`$$...$$` 或 `\(...\)`；
 - 独立公式的印刷编号保存在 `<label>`；
 - 无编号公式省略 `<label>`；
@@ -614,6 +682,11 @@ assets/content/figures/original/fig-000001.pdf
 - 不进行裁边；
 - 不进行有损压缩。
 
+PDF 页面的规范画布是该页继承后生效的 CropBox；如果没有 CropBox，则使用 MediaBox。
+“不进行裁边”表示不得在该规范画布之外再次执行内容感知裁切。渲染器必须应用 PDF 页面的
+`Rotate` 值，使页面图片按正常阅读方向保存。`width_pt`、`height_pt`、像素尺寸和所有元素坐标
+均相对于旋转校正后的规范画布。
+
 命名方式：
 
 ```text
@@ -651,12 +724,22 @@ assets/evidence/pages/src-001/page-000002.png
 - `physical_page`：从 1 开始；
 - `logical_page_id`：跨不同版本表示同一逻辑页的稳定标识；
 - `printed_label`：页面上印刷的页码，可以是 `"xii"`、`"12"` 或 `null`；
-- `rotation_degrees`：只能为 `0`、`90`、`180`、`270`；
+- `width_pt`、`height_pt`：旋转校正后规范画布的尺寸，单位为 PDF point（1/72 inch）；
+- `rotation_degrees`：PDF 页字典中继承并归一化后的顺时针 `Rotate` 值，只能为 `0`、`90`、`180`、`270`；页面图片已经应用该旋转；
+- `image_width_px`、`image_height_px`：必须与 300 DPI 下的 point 尺寸一致，允许因像素取整产生最多 1 px 的差异；
 - `ocr_status`：必须是 `completed`、`no-text` 或 `failed`。
 
 合规结果包不得包含 `ocr_status: "failed"`。
 
 多版本中对应同一逻辑页的记录必须共享同一个 `logical_page_id`。
+
+primary source 的物理页 N 固定使用 `lp-NNNNNN`。alternate source 与 primary 对应的页面复用该 ID；
+无法对应 primary 的页面，从 primary 最大页号加一开始，按 `source_id`、`physical_page` 顺序分配新 ID。
+supplementary source 独立分页时使用同一追加规则。页面对应关系改变属于语义修订，不能仅为改变编号而重排已有 ID。
+
+同一 `source_id` 内，`physical_page` 必须唯一并从 1 连续到 manifest 的 `page_count`；
+`image` 必须与 `source_id` 和 `physical_page` 推导出的标准路径完全一致。
+每一非空行必须通过 `schema/0.1/page.schema.json`。
 
 ## 15. 元素来源记录 `elements.jsonl`
 
@@ -667,7 +750,7 @@ assets/evidence/pages/src-001/page-000002.png
 ```json
 {
   "element_id": "p-000001",
-  "xml_path": "/book/book-body/book-part[1]/body/sec[1]/p[1]",
+  "xml_path": "//*[@id='p-000001']",
   "reading_order": 17,
   "sources": [
     {
@@ -706,7 +789,15 @@ assets/evidence/pages/src-001/page-000002.png
 }
 ```
 
+`xml_path` 的规范形式固定为 `//*[@id='<element_id>']`，其中 ID 必须与 `element_id` 完全相同。
+P2H 0.1 不接受依赖同级序号的 XPath 作为规范值。验证器必须求值该 XPath，并确认它恰好选择一个元素。
+
 每个 `sources` 项表示该元素在一个源文档物理页上的位置。`page_image` 必须直接引用该物理页在 `assets/evidence/pages/` 中的逐页截图。元素跨页时，必须为每个涉及的物理页分别建立一个 `sources` 项。
+
+同一元素记录中的 `(source_id, physical_page)` 组合不得重复。同一页有多个不连续区域时使用一个
+`sources` 项和多个 `regions`；跨页或跨源时使用多个 `sources` 项。多个源版本中的对应位置都应记录，
+不得为了只保留 primary source 而丢弃 alternate source 的证据。
+`sources` 按 `source_id`、`physical_page` 升序排列；同页 regions 按正常阅读方向从上到下、从左到右排列。
 
 ### 15.2 `bbox` 坐标
 
@@ -721,8 +812,14 @@ assets/evidence/pages/src-001/page-000002.png
 - 左上角为 `(0, 0)`；
 - 右下角为 `(1, 1)`；
 - 坐标基于旋转校正后的完整页面；
+- 坐标边界对应页面图片像素边界，而不是像素中心；将像素矩形 `[left, top, right, bottom]`
+  转换为规范坐标时分别除以 `image_width_px` 和 `image_height_px`；
 - 四个数均在 `[0, 1]` 范围内；
 - 必须满足 `x0 < x1` 和 `y0 < y1`。
+
+JSON 数值不得使用字符串表示。生成器应至少保留六位小数；验证器不得依赖超过六位小数的精度。
+如矩形无法准确描述旋转或非矩形区域，可以在同一 region 中增加 `polygon`，但 `bbox` 仍必须存在，
+并且必须是 polygon 的最小轴对齐包围框。polygon 点使用相同归一化坐标系并按边界顺序排列。
 
 一个元素在同一页内由多个不连续区域组成时，必须提供多个 region。元素跨页时，必须使用多个 `sources` 项。
 
@@ -746,6 +843,14 @@ assets/evidence/pages/src-001/page-000002.png
 - OCR 候选必须保留 OCR 引擎名称和版本；
 - `confidence` 必须在 `0` 到 `1` 之间。
 
+“文本元素”包括可见元数据、标题、段落、列表项、图注、表格单元格、脚注、参考文献、
+引文块、代码块和补充材料说明。公式的 `text` 保存对应引擎未经最终修订的公式识别字符串。
+图片、纯媒体和没有文字的装饰元素可以使用空的 `candidates` 数组。
+
+每个 candidate 必须是一次可追溯的原始提取结果：`method` 标明来源方式，`engine` 和
+`engine_version` 标明产生者，`text` 保存该候选的原样 Unicode 字符串。空字符串表示引擎对该区域
+没有识别出文本，不能用最终 XML 文本回填。
+
 `decision.method` 必须是：
 
 ```text
@@ -755,7 +860,37 @@ reconciled
 manual
 ```
 
-### 15.5 修订记录
+含义固定为：
+
+- `native-pdf`：最终 XML 值直接采用 native-pdf 候选；
+- `ocr`：最终 XML 值直接采用 OCR 候选；
+- `reconciled`：最终值由两个或更多候选自动融合、规范化或语义重建；
+- `manual`：最终值经过人工判断；必须至少有一条 `method: "manual"` 的 revision。
+
+最终规范值只保存在 XML 中，candidate 不重复充当最终值。每一非空行必须通过
+`schema/0.1/element.schema.json`；candidate 是否满足 source class 的数量要求、跨文件引用一致性和
+`reading_order` 连续性由包验证器检查。
+
+### 15.5 元素关联资源
+
+元素除页面证据外还可以有 `resources`：
+
+```json
+{
+  "role": "original",
+  "path": "assets/content/figures/original/fig-000001.svg",
+  "media_type": "image/svg+xml",
+  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "source_id": "src-001"
+}
+```
+
+`role` 是 `normalized`、`original`、`fallback` 或 `supplementary`。XML 中正在使用的规范化资源可以
+标为 normalized；从源 PDF 提取并额外保留的矢量或二进制对象必须以 original 记录；图片回退表格等
+替代表示使用 fallback。path 必须位于 `assets/content/`，sha256 必须与 `checksums.sha256` 一致。
+没有额外资源的纯文本元素省略 `resources`。
+
+### 15.6 修订记录
 
 人工或自动语义修订必须记录：
 
@@ -777,6 +912,9 @@ manual
 ```
 
 不得直接修改最终内容而不增加修订记录。
+
+`method: "automatic"` 表示自动语义修订，`method: "manual"` 表示人工修订。revision 按时间升序排列；
+相邻记录的 `after` 与下一条的 `before` 必须一致，最后一条 `after` 必须与 XML 中的最终规范值一致。
 
 ## 16. 有意省略的内容 `omissions.jsonl`
 
@@ -811,7 +949,10 @@ unreadable
 other
 ```
 
-`other` 必须提供非空 `reason`。每条省略记录必须通过 `page_image` 和 `bbox` 指向逐页截图中的具体区域。
+每条 omission 都必须提供非空 `reason`，说明为什么该可见内容不进入规范正文；`other` 的 reason
+还必须说明为什么现有类型均不适用。每条省略记录必须通过 `page_image` 和 `bbox` 指向逐页截图中的
+具体区域，并通过 `schema/0.1/omission.schema.json`。空白背景不是“被省略的内容”，无需记录；
+整张物理空白页使用覆盖规范画布的 `type: "blank"` 记录。
 
 ## 17. 内容资源
 
@@ -885,6 +1026,9 @@ assets/sources/src-002.djvu
 
 ```json
 {
+  "$schema": "https://hwaipy.github.io/Paper2HTML/schema/0.1/annotation-index.schema.json",
+  "format": "paper2html-annotation-index",
+  "format_version": "0.1",
   "layers": [
     {
       "id": "translation-zh-cn",
@@ -917,6 +1061,11 @@ reading-note
 ```
 
 每条记录必须指向存在的 XML 元素 ID。
+
+`index.json` 必须通过 `schema/0.1/annotation-index.schema.json`；每个 layer 文件的每一非空行必须通过
+`schema/0.1/annotation.schema.json`。layer ID 和 path 必须唯一，layer 记录中的 `kind`、`language`
+必须与 index 中的声明相同。如果 annotations 存在，manifest 必须以
+`"annotations": {"index": "annotations/index.json"}` 声明入口。
 
 `content_text` 与 `content_xml` 必须且只能出现一个：
 
@@ -956,6 +1105,7 @@ abcdef0123456789...  content/document.xml
 
 ```json
 {
+  "$schema": "https://hwaipy.github.io/Paper2HTML/schema/0.1/validation-report.schema.json",
   "format": "paper2html-validation-report",
   "format_version": "0.1",
   "valid": true,
@@ -979,6 +1129,21 @@ abcdef0123456789...  content/document.xml
 
 如果 `valid` 不是 `true`，该目录不得被声明为合规的 P2H Package。
 
+每个 check 的状态必须是：
+
+```text
+passed
+failed
+partial
+not-run
+not-applicable
+```
+
+`valid: true` 时所有十项强制 check 必须为 `passed` 且 `errors` 必须为空。`valid: false` 时 `errors`
+必须至少有一项。warning 不会单独导致 `valid: false`。每个 error 和 warning 至少包含机器稳定的
+`code` 与供人阅读的 `message`，并应当在可能时包含 path、line、element_id、source_id 或 physical_page。
+报告必须通过 `schema/0.1/validation-report.schema.json`。
+
 ## 21. 强制验证规则
 
 合规验证器必须检查以下内容。
@@ -988,8 +1153,10 @@ abcdef0123456789...  content/document.xml
 - 所有强制文件存在；
 - 没有非法路径或符号链接；
 - 所有文件通过 SHA-256；
-- manifest 符合 JSON Schema；
+- manifest 符合 `schema/0.1/manifest.schema.json`；
 - JSONL 每一非空行均是独立有效 JSON。
+- `pages.jsonl`、`elements.jsonl`、`omissions.jsonl` 和 annotation layer 的每一非空行分别通过对应 record Schema；
+- annotation index 和 validation report 分别通过对应 Schema；
 
 ### 21.2 XML
 
@@ -1023,12 +1190,20 @@ abcdef0123456789...  content/document.xml
 
 ### 21.5 内容覆盖
 
-每个非空源页面区域必须满足以下之一：
+P2H 0.1 的覆盖单位是“有意义的可见对象”，不是页面的每个非白像素。文字行、公式、图片、表格、
+页眉页脚、页码、装饰物、扫描污点和无法辨认但明显存在的内容都是可见对象；纯背景、纸张纹理和
+抗锯齿边缘不是独立对象。
+
+每个有意义的可见对象必须满足以下之一：
 
 - 映射到一个 XML 内容元素；
 - 记录为有意省略区域。
 
-验证器不得允许来源不明的大面积未覆盖区域。
+包内结构检查只能证明已声明元素的 provenance 完整，不能单独证明源页面没有漏检。因此
+`page_coverage: "passed"` 必须来自独立于最终 XML 的页面审核，审核至少使用逐页 OCR/版面检测结果
+与 elements/omissions 的区域并集比较，并对检测到但没有交集的对象报告 error。仅执行包内引用检查时，
+状态最多为 `partial`，此时 `valid` 必须为 `false`。审核算法、引擎和版本必须记录在 validation report
+的 `x-...` 扩展字段中，以便复现。验证器不得把整页矩形映射到普通正文元素来规避覆盖检查。
 
 ### 21.6 公式、图片和表格
 
@@ -1059,7 +1234,34 @@ abcdef0123456789...  content/document.xml
 
 最终 XML 不需要区分元素最初来自 OCR 还是原生提取；该信息统一保存在 `elements.jsonl`。
 
-## 23. 最小合规结果包
+## 23. 机器可读规范文件
+
+P2H Package 0.1 的机器可读规范固定在仓库 `schema/0.1/`，并通过 GitHub Pages 发布：
+
+| 文件 | 用途 |
+|---|---|
+| `common.schema.json` | JSON Schema 共用定义，不直接验证包文件 |
+| `manifest.schema.json` | `manifest.json` |
+| `page.schema.json` | `pages.jsonl` 的单行记录 |
+| `element.schema.json` | `elements.jsonl` 的单行记录 |
+| `omission.schema.json` | `omissions.jsonl` 的单行记录 |
+| `annotation-index.schema.json` | `annotations/index.json` |
+| `annotation.schema.json` | annotation layer 的单行记录 |
+| `validation-report.schema.json` | `validation/report.json` |
+| `p2h-profile.sch` | JATS/BITS 之上的 P2H XML Profile，执行 `full` phase |
+| `upstream-lock.json` | 固定官方 JATS/BITS archive、SHA-256 和入口文件 |
+
+所有 JSON Schema 使用 JSON Schema Draft 2020-12。规范 URL 的共同前缀是：
+
+```text
+https://hwaipy.github.io/Paper2HTML/schema/0.1/
+```
+
+Schema 只能验证单文件内部约束。ID 跨文件对应、页码连续性、bbox 顺序、文件存在性、资源解码、
+XML 阅读顺序、候选来源要求、页面覆盖和校验和等约束必须由合规包验证器执行，不能因为没有写成
+JSON Schema 关键字而省略。`schema/0.1/README.md` 给出分层验证入口和跨文件检查清单。
+
+## 24. 最小合规结果包
 
 最小合规包至少为：
 
@@ -1084,7 +1286,7 @@ OUTPUT_ROOT/
 
 如果正文包含图片、媒体或补充材料，则必须增加相应的 `assets/content/` 文件。
 
-## 24. 合规性声明
+## 25. 合规性声明
 
 一个结果目录只有同时满足以下条件，才能称为：
 

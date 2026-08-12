@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwaipy.github.io/Paper2HTML/schema/0.1/element.schema.json",
+  "title": "Paper2HTML Element Provenance Record 0.1",
+  "description": "Schema for one non-empty line of provenance/elements.jsonl.",
+  "type": "object",
+  "required": ["element_id", "xml_path", "reading_order", "sources", "decision", "revisions"],
+  "properties": {
+    "element_id": { "$ref": "common.schema.json#/$defs/elementId" },
+    "xml_path": { "type": "string", "minLength": 1 },
+    "reading_order": { "type": "integer", "minimum": 1 },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/elementSource" }
+    },
+    "decision": { "$ref": "#/$defs/decision" },
+    "resources": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/elementResource" }
+    },
+    "revisions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/revision" }
+    }
+  },
+  "patternProperties": {
+    "^x-[a-z0-9]+(?:-[a-z0-9]+)*$": true
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "candidate": {
+      "type": "object",
+      "required": ["method", "engine", "engine_version", "text", "confidence"],
+      "properties": {
+        "method": { "enum": ["native-pdf", "ocr", "manual"] },
+        "engine": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "engine_version": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "text": { "type": "string" },
+        "confidence": { "$ref": "common.schema.json#/$defs/confidence" }
+      },
+      "patternProperties": {
+        "^x-[a-z0-9]+(?:-[a-z0-9]+)*$": true
+      },
+      "additionalProperties": false
+    },
+    "elementSource": {
+      "type": "object",
+      "required": ["source_id", "physical_page", "logical_page_id", "page_image", "regions", "candidates"],
+      "properties": {
+        "source_id": { "$ref": "common.schema.json#/$defs/sourceId" },
+        "physical_page": { "type": "integer", "minimum": 1 },
+        "logical_page_id": { "$ref": "common.schema.json#/$defs/logicalPageId" },
+        "page_image": {
+          "allOf": [
+            { "$ref": "common.schema.json#/$defs/packagePath" },
+            { "type": "string", "pattern": "^assets/evidence/pages/src-[0-9]{3}/page-[0-9]{6}\\.png$" }
+          ]
+        },
+        "regions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "common.schema.json#/$defs/region" }
+        },
+        "candidates": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/candidate" }
+        }
+      },
+      "patternProperties": {
+        "^x-[a-z0-9]+(?:-[a-z0-9]+)*$": true
+      },
+      "additionalProperties": false
+    },
+    "decision": {
+      "type": "object",
+      "required": ["method", "confidence"],
+      "properties": {
+        "method": { "enum": ["native-pdf", "ocr", "reconciled", "manual"] },
+        "confidence": { "$ref": "common.schema.json#/$defs/confidence" }
+      },
+      "patternProperties": {
+        "^x-[a-z0-9]+(?:-[a-z0-9]+)*$": true
+      },
+      "additionalProperties": false
+    },
+    "elementResource": {
+      "type": "object",
+      "required": ["role", "path", "media_type", "sha256"],
+      "properties": {
+        "role": { "enum": ["normalized", "original", "fallback", "supplementary"] },
+        "path": {
+          "allOf": [
+            { "$ref": "common.schema.json#/$defs/packagePath" },
+            { "type": "string", "pattern": "^assets/content/" }
+          ]
+        },
+        "media_type": { "type": "string", "pattern": "^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$" },
+        "sha256": { "$ref": "common.schema.json#/$defs/sha256" },
+        "source_id": { "$ref": "common.schema.json#/$defs/sourceId" }
+      },
+      "patternProperties": {
+        "^x-[a-z0-9]+(?:-[a-z0-9]+)*$": true
+      },
+      "additionalProperties": false
+    },
+    "revisionEvidence": {
+      "type": "object",
+      "required": ["source_id", "physical_page", "page_image", "bbox"],
+      "properties": {
+        "source_id": { "$ref": "common.schema.json#/$defs/sourceId" },
+        "physical_page": { "type": "integer", "minimum": 1 },
+        "page_image": {
+          "allOf": [
+            { "$ref": "common.schema.json#/$defs/packagePath" },
+            { "type": "string", "pattern": "^assets/evidence/pages/src-[0-9]{3}/page-[0-9]{6}\\.png$" }
+          ]
+        },
+        "bbox": { "$ref": "common.schema.json#/$defs/bbox" }
+      },
+      "additionalProperties": false
+    },
+    "revision": {
+      "type": "object",
+      "required": ["timestamp", "actor", "method", "before", "after", "reason", "evidence"],
+      "properties": {
+        "timestamp": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "actor": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "method": { "enum": ["automatic", "manual"] },
+        "before": { "type": "string" },
+        "after": { "type": "string" },
+        "reason": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/revisionEvidence" }
+        }
+      },
+      "patternProperties": {
+        "^x-[a-z0-9]+(?:-[a-z0-9]+)*$": true
+      },
+      "additionalProperties": false
+    }
+  }
+}
