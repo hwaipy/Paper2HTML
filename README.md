@@ -1,5 +1,8 @@
 # Paper2HTML
 
+The independent P2H Package 0.1 command-line validator is documented in
+[`VALIDATOR.md`](VALIDATOR.md).
+
 Paper2HTML 用于将书籍、期刊论文等出版物——主要是 PDF 格式的内容——转换为标准、结构化且可供程序处理的文档及配套资源，再通过 HTML 与 JavaScript 将其呈现为适合现代设备阅读的内容。
 
 项目希望摆脱 PDF 固定页面布局的限制，让同一份文献能够在电脑、手机及其他不同尺寸的屏幕上获得清晰、舒适且一致的阅读体验。

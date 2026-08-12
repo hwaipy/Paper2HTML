@@ -3,3 +3,10 @@
 
 # Local standalone Markdown reader shared outside the repository.
 /markdown-reader.html
+
+# Python validator development environment and caches.
+/.venv/
+/.pytest_cache/
+/.mypy_cache/
+/.ruff_cache/
+__pycache__/
