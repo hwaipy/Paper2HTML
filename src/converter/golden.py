@@ -13,6 +13,7 @@ from typing import Any
 from PIL import Image
 
 from .pipeline import ConversionError, _descriptor
+from .quality import build_quality_report
 
 STRUCTURED_FILES = (
     "manifest.json",
@@ -76,6 +77,7 @@ def _element_projection(record: dict[str, Any]) -> dict[str, Any]:
         "sources": sources,
         "decision_method": record["decision"]["method"],
         "revisions": record.get("revisions", []),
+        "resources": record.get("resources", []),
     }
 
 
@@ -131,6 +133,7 @@ def build_projection(package: Path) -> dict[str, Any]:
         "error_codes": sorted(error["code"] for error in report["errors"]),
         "warning_codes": sorted(warning["code"] for warning in report["warnings"]),
     }
+    quality = build_quality_report(package)
     return {
         "format": "paper2html-golden-projection",
         "format_version": "1",
@@ -147,6 +150,7 @@ def build_projection(package: Path) -> dict[str, Any]:
         "page_images": image_summaries,
         "engine_fingerprint": {"poppler": poppler_versions, "vision": vision_versions},
         "validation": stable_report,
+        "content_quality": quality,
     }
 
 
@@ -169,6 +173,7 @@ def compare_projection(expected: dict[str, Any], actual: dict[str, Any]) -> list
         "element_count",
         "omission_count",
         "validation",
+        "content_quality",
     ):
         if expected.get(key) != actual.get(key):
             differences.append(key)
@@ -249,6 +254,11 @@ def update_golden(package: Path, golden: Path, case_id: str, confirmation: str) 
             shutil.copyfile(package_file, target)
         (temporary / "projection.json").write_text(
             json.dumps(projection, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (temporary / "quality.json").write_text(
+            json.dumps(projection["content_quality"], ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
             newline="\n",
         )

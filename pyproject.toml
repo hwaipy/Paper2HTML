@@ -10,6 +10,7 @@ dependencies = [
   "lxml>=5.3,<7",
   "pillow>=11,<13",
   "saxonche>=12.5,<13",
+  "wordfreq==3.1.1",
 ]
 
 [project.optional-dependencies]
@@ -26,7 +27,7 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["."]
 markers = ["integration: slow network/document tests using platform OCR"]
 
 [tool.ruff]
@@ -39,7 +40,7 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-packages = ["validator"]
+packages = ["src.validator"]
 disable_error_code = ["no-any-return", "override", "attr-defined", "union-attr", "arg-type"]
 
 [[tool.mypy.overrides]]

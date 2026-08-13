@@ -10,7 +10,7 @@ import pytest
 from lxml import etree
 from PIL import Image
 
-from validator.validator import ADDRESSABLE_TAGS
+from src.validator.validator import ADDRESSABLE_TAGS
 
 ARTICLE = """<?xml version="1.0" encoding="UTF-8"?>
 <article xmlns:xlink="http://www.w3.org/1999/xlink" id="doc-000001"

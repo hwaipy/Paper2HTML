@@ -30,6 +30,7 @@ from typing import Any, cast
 import certifi
 from lxml import etree
 from PIL import Image
+from wordfreq import get_frequency_dict, zipf_frequency
 
 PACKAGE_NAMESPACE = uuid.UUID("6d4d259c-105b-5fee-a87a-efd4ad4d9bf8")
 MANIFEST_SCHEMA = "https://hwaipy.github.io/Paper2HTML/schema/0.1/manifest.schema.json"
@@ -85,6 +86,13 @@ class ContentBlock:
     boxes: list[TextBox]
     kind: str = "paragraph"
     element_id: str = ""
+    child_ids: list[str] = field(default_factory=list)
+    caption_boxes: list[TextBox] = field(default_factory=list)
+    resources: list[dict[str, Any]] = field(default_factory=list)
+    revision_before: str | None = None
+    aff_rids: list[str] = field(default_factory=list)
+    equal_contribution: bool = False
+    derived_bbox: tuple[float, float, float, float] | None = None
 
     @property
     def regions(self) -> list[list[float]]:
@@ -102,6 +110,23 @@ class PageData:
     image_height: int
     native: list[TextBox] = field(default_factory=list)
     ocr: list[TextBox] = field(default_factory=list)
+
+
+@dataclass
+class FrontMatter:
+    authors: list[ContentBlock] = field(default_factory=list)
+    affiliations: list[ContentBlock] = field(default_factory=list)
+    abstract: ContentBlock | None = None
+    publication_date: ContentBlock | None = None
+    contribution_note: ContentBlock | None = None
+
+
+@dataclass
+class StructureResult:
+    title: ContentBlock
+    front: FrontMatter
+    blocks: list[ContentBlock]
+    omissions: list[dict[str, Any]]
 
 
 def _run(command: list[str], *, timeout: int = 300) -> subprocess.CompletedProcess[str]:
@@ -247,7 +272,7 @@ def _merge_line_fragments(boxes: list[TextBox]) -> list[TextBox]:
         same_baseline = previous is not None and abs(previous.bbox[1] - box.bbox[1]) < 0.004
         horizontal_gap = box.bbox[0] - previous.bbox[2] if previous else 1.0
         if same_baseline and -0.01 <= horizontal_gap < 0.06:
-            joiner = "" if horizontal_gap < 0.004 or previous.text.endswith(("(", "[", "{")) else " "
+            joiner = " " if horizontal_gap >= 0.004 or _needs_interrun_space(previous.text, box.text) else ""
             bbox = _bounded_bbox(
                 min(previous.bbox[0], box.bbox[0]),
                 min(previous.bbox[1], box.bbox[1]),
@@ -256,14 +281,51 @@ def _merge_line_fragments(boxes: list[TextBox]) -> list[TextBox]:
             )
             output[-1] = TextBox(
                 box.page,
-                previous.text + joiner + box.text,
+                _repair_token_spacing(previous.text + joiner + box.text),
                 bbox,
                 max(previous.font_size, box.font_size),
                 1.0,
             )
         else:
-            output.append(box)
+            output.append(
+                TextBox(
+                    box.page,
+                    _repair_token_spacing(box.text),
+                    box.bbox,
+                    box.font_size,
+                    box.confidence,
+                )
+            )
     return output
+
+
+def _needs_interrun_space(left: str, right: str) -> bool:
+    if not left or not right or left.endswith(("(", "[", "{")):
+        return False
+    a, b = left[-1], right[0]
+    a_latin = "A" <= a <= "Z" or "a" <= a <= "z"
+    b_latin = "A" <= b <= "Z" or "a" <= b <= "z"
+    if a.islower() and b.isupper():
+        return True
+    if a.isalpha() and b.isalpha() and a_latin != b_latin:
+        return True
+    return a.isdigit() and b.isalpha() and len(right) > 1
+
+
+def _repair_token_spacing(text: str) -> str:
+    text = re.sub(r"(?<=[a-z])(?=[A-Z][A-Z])", " ", text)
+    text = re.sub(r"(?<=[∆δφϕηνµε])(?=[A-Za-z])", " ", text)
+    text = re.sub(r"\b(ns|ms|km|Hz)(?=[A-Za-z])", r"\1 ", text)
+    text = re.sub(
+        r"\b([A-Za-z]+)-([a-z]+)\b",
+        lambda match: (
+            match.group(1) + match.group(2)
+            if _inrun_hyphen_is_soft(match.group(1), match.group(2))
+            else match.group(0)
+        ),
+        text,
+    )
+    return unicodedata.normalize("NFC", text)
 
 
 def _extract_vision(images: list[Path]) -> list[list[TextBox]]:
@@ -317,20 +379,27 @@ def _reading_order(boxes: list[TextBox]) -> list[TextBox]:
     def key(box: TextBox) -> tuple[float, float]:
         return round(box.bbox[1], 4), box.bbox[0]
 
-    if len(left) < 2 or len(right) < 2:
+    wide_prose = [box for box in boxes if box.bbox[2] - box.bbox[0] >= 0.45]
+    if len(left) < 2 or len(right) < 2 or len(wide_prose) >= len(boxes) * 0.35:
         return sorted(boxes, key=key)
-    column_top = min(box.bbox[1] for box in narrow)
-    column_bottom = max(box.bbox[3] for box in narrow)
-    leading = [box for box in full if box.bbox[3] <= column_top]
-    trailing = [box for box in full if box.bbox[1] >= column_bottom]
-    middle = [box for box in full if box not in leading and box not in trailing]
-    return (
-        sorted(leading, key=key)
-        + sorted(left, key=key)
-        + sorted(right, key=key)
-        + sorted(middle, key=key)
-        + sorted(trailing, key=key)
-    )
+    output: list[TextBox] = []
+    band: list[TextBox] = []
+
+    def flush() -> None:
+        band_left = [box for box in band if (box.bbox[0] + box.bbox[2]) / 2 < 0.5]
+        band_right = [box for box in band if box not in band_left]
+        output.extend(sorted(band_left, key=key))
+        output.extend(sorted(band_right, key=key))
+        band.clear()
+
+    for box in sorted(boxes, key=key):
+        if box in full:
+            flush()
+            output.append(box)
+        else:
+            band.append(box)
+    flush()
+    return output
 
 
 def _is_marginal_vertical_stamp(box: TextBox) -> bool:
@@ -351,7 +420,426 @@ def _title_candidate_score(box: TextBox) -> tuple[float, float, float, float] | 
     return box.font_size, width, -abs(center - 0.5), -box.bbox[1]
 
 
-def _group_blocks(pages: list[PageData]) -> tuple[ContentBlock, list[ContentBlock]]:
+def _join_lines(boxes: list[TextBox]) -> str:
+    text = ""
+    for box in boxes:
+        next_word = box.text.split(maxsplit=1)[0].casefold() if box.text else ""
+        if text.endswith("-") and next_word in {"and", "or"}:
+            text += " " + box.text
+        elif text.endswith("-") and next_word.startswith(("and-", "or-")):
+            text += box.text
+        elif text.endswith("-") and box.text[:1].islower():
+            if _line_break_hyphen_is_soft(text, box.text):
+                text = text[:-1] + box.text
+            else:
+                text += box.text
+        else:
+            text += (" " if text else "") + box.text
+    return _repair_token_spacing(" ".join(text.split()))
+
+
+@lru_cache(maxsize=1)
+def _english_word_frequencies() -> dict[str, float]:
+    return get_frequency_dict("en", wordlist="best")
+
+
+def _line_break_hyphen_is_soft(left: str, right: str) -> bool:
+    """Use a version-locked lexicon to distinguish soft hyphens from compounds."""
+    left_match = re.search(r"([A-Za-z]+)-$", left)
+    right_match = re.match(r"([A-Za-z]+)", right)
+    if not left_match or not right_match:
+        return False
+    joined = (left_match.group(1) + right_match.group(1)).casefold()
+    hyphenated = (left_match.group(1) + "-" + right_match.group(1)).casefold()
+    lexicon = _english_word_frequencies()
+    return joined in lexicon and zipf_frequency(joined, "en") >= 2.5 and hyphenated not in lexicon
+
+
+def _inrun_hyphen_is_soft(left: str, right: str) -> bool:
+    """Repair a soft line-break hyphen already merged into one Poppler run."""
+    joined = (left + right).casefold()
+    hyphenated = (left + "-" + right).casefold()
+    lexicon = _english_word_frequencies()
+    joined_has_stronger_evidence = (
+        joined in lexicon and zipf_frequency(joined, "en") >= zipf_frequency(hyphenated, "en") + 0.5
+    )
+    productive_suffix = right.casefold() in {
+        "able",
+        "ance",
+        "ation",
+        "ed",
+        "ence",
+        "ible",
+        "ing",
+        "ion",
+        "ity",
+        "ive",
+        "less",
+        "ly",
+        "ment",
+        "ness",
+        "ous",
+        "sion",
+        "tion",
+    }
+    return joined_has_stronger_evidence or productive_suffix and left.casefold() in lexicon
+
+
+def _front_matter(pages: list[PageData], title_box: TextBox) -> tuple[FrontMatter, set[TextBox]]:
+    page = pages[0]
+    ordered = sorted(page.native, key=lambda box: (box.bbox[1], box.bbox[0]))
+    consumed = {title_box}
+    abstract_label = next((box for box in ordered if box.text.strip().casefold() == "abstract"), None)
+    abstract_top = abstract_label.bbox[1] if abstract_label else 0.7
+    possible_author_lines = [
+        box
+        for box in ordered
+        if title_box.bbox[3] < box.bbox[1] < abstract_top
+        and not _is_marginal_vertical_stamp(box)
+        and box.font_size >= max(10.5, title_box.font_size * 0.6)
+        and "," in box.text
+    ]
+    author_font = max((box.font_size for box in possible_author_lines), default=0.0)
+    author_lines = [box for box in possible_author_lines if box.font_size >= author_font - 0.5]
+    author_bottom = max((box.bbox[3] for box in author_lines), default=title_box.bbox[3])
+    author_markers = [
+        box
+        for box in ordered
+        if title_box.bbox[3] < box.bbox[1] <= author_bottom + 0.012
+        and box not in author_lines
+        and re.fullmatch(r"[0-9,†]+", box.text.strip()) is not None
+    ]
+    authors: list[ContentBlock] = []
+    for line in author_lines:
+        name_matches = [
+            match for match in re.finditer(r"[^,]+", line.text) if re.search(r"[A-Za-z]", match.group())
+        ]
+        line_markers = sorted(
+            [marker for marker in author_markers if abs(marker.bbox[1] - line.bbox[1]) < 0.015],
+            key=lambda item: item.bbox[0],
+        )
+        for index, match in enumerate(name_matches):
+            name = match.group().strip()
+            if not name or not re.search(r"[A-Za-z]", name):
+                continue
+            leading = len(match.group()) - len(match.group().lstrip())
+            start = match.start() + leading
+            end = start + len(name)
+            width = line.bbox[2] - line.bbox[0]
+            sliced = TextBox(
+                line.page,
+                name,
+                _bounded_bbox(
+                    line.bbox[0] + width * start / len(line.text),
+                    line.bbox[1],
+                    line.bbox[0] + width * end / len(line.text),
+                    line.bbox[3],
+                ),
+                line.font_size,
+            )
+            candidates = [
+                marker
+                for marker in author_markers
+                if sliced.bbox[0] - 0.015 <= (marker.bbox[0] + marker.bbox[2]) / 2 <= sliced.bbox[2] + 0.035
+                and abs(marker.bbox[1] - line.bbox[1]) < 0.015
+            ]
+            marker = (
+                line_markers[index]
+                if len(line_markers) == len(name_matches)
+                else min(candidates, key=lambda item: abs(item.bbox[0] - sliced.bbox[2]))
+                if candidates
+                else None
+            )
+            marker_text = marker.text if marker else ""
+            raw_boxes = [line, *([marker] if marker else [])]
+            authors.append(
+                ContentBlock(
+                    1,
+                    name,
+                    raw_boxes,
+                    "author",
+                    revision_before=_join_lines(raw_boxes),
+                    aff_rids=[f"aff-{int(value):06d}" for value in re.findall(r"\d+", marker_text)],
+                    equal_contribution="†" in marker_text,
+                    derived_bbox=sliced.bbox,
+                )
+            )
+    consumed.update(author_lines)
+    consumed.update(author_markers)
+    affiliation_lines = [
+        box
+        for box in ordered
+        if author_lines
+        and author_bottom < box.bbox[1] < abstract_top
+        and not _is_marginal_vertical_stamp(box)
+        and 8.5 <= box.font_size <= 11.5
+        and not box.text.startswith("†")
+    ]
+    affiliations: list[ContentBlock] = []
+    current: list[TextBox] = []
+    for box in affiliation_lines:
+        if re.match(r"^[1-9]\d?\s+(?=[A-Z])", box.text) and current:
+            affiliations.append(ContentBlock(1, _join_lines(current), current, "affiliation"))
+            current = []
+        current.append(box)
+    if current:
+        affiliations.append(ContentBlock(1, _join_lines(current), current, "affiliation"))
+    consumed.update(affiliation_lines)
+
+    abstract: ContentBlock | None = None
+    if abstract_label is not None:
+        consumed.add(abstract_label)
+        abstract_boxes = [
+            box for box in ordered if box.bbox[1] > abstract_label.bbox[3] and not _is_page_number(box)
+        ]
+        if abstract_boxes and len(pages) > 1 and abstract_boxes[-1].bbox[3] > 0.68:
+            continuation = sorted(pages[1].native, key=lambda box: (box.bbox[1], box.bbox[0]))
+            previous: TextBox | None = None
+            for box in continuation:
+                if _is_marginal_vertical_stamp(box) or _is_page_number(box):
+                    continue
+                if previous is not None and box.bbox[1] - previous.bbox[3] > 0.025:
+                    break
+                if abstract_boxes and abs(box.font_size - abstract_boxes[-1].font_size) > 1.0:
+                    break
+                abstract_boxes.append(box)
+                previous = box
+        consumed.update(abstract_boxes)
+        abstract = ContentBlock(1, _join_lines(abstract_boxes), abstract_boxes, "abstract")
+
+    publication_date: ContentBlock | None = None
+    for box in ordered:
+        if not _is_marginal_vertical_stamp(box):
+            continue
+        date_match = re.search(r"\b(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})\b", box.text)
+        if date_match:
+            months = {
+                name: index
+                for index, name in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(), 1)
+            }
+            month = months.get(date_match.group(2).title())
+            if month:
+                publication_date = ContentBlock(
+                    box.page,
+                    f"{int(date_match.group(1))}{month}{date_match.group(3)}",
+                    [box],
+                    f"pub-date:{int(date_match.group(1))}:{month}:{date_match.group(3)}",
+                    revision_before=box.text,
+                )
+                consumed.add(box)
+                break
+    authorship_notes = [
+        box for box in ordered if author_bottom < box.bbox[1] < abstract_top and box.text.startswith("†")
+    ]
+    consumed.update(authorship_notes)
+    contribution_note = (
+        ContentBlock(1, _join_lines(authorship_notes), authorship_notes, "contribution-note")
+        if authorship_notes
+        else None
+    )
+    return FrontMatter(authors, affiliations, abstract, publication_date, contribution_note), consumed
+
+
+def _is_page_number(box: TextBox) -> bool:
+    return box.bbox[1] > 0.74 and re.fullmatch(r"\d{1,4}", box.text.strip()) is not None
+
+
+def _omission(box: TextBox, kind: str, reason: str) -> dict[str, Any]:
+    return {
+        "source_id": "src-001",
+        "physical_page": box.page,
+        "logical_page_id": f"lp-{box.page:06d}",
+        "page_image": f"assets/evidence/pages/src-001/page-{box.page:06d}.png",
+        "bbox": list(box.bbox),
+        "type": kind,
+        "reason": reason,
+    }
+
+
+def _figure_blocks(pages: list[PageData]) -> tuple[list[ContentBlock], set[TextBox]]:
+    figures: list[ContentBlock] = []
+    consumed: set[TextBox] = set()
+    for page in pages:
+        boxes = sorted(page.native, key=lambda box: (box.bbox[1], box.bbox[0]))
+        starts = [box for box in boxes if re.match(r"^Fig\.\s*\d+\b", box.text)]
+        for start in starts:
+            if start.bbox[1] >= 0.6:
+                continue
+            caption_boxes = [
+                box
+                for box in boxes
+                if start.bbox[1] - 0.002 <= box.bbox[1]
+                and box.bbox[3] <= start.bbox[1] + 0.23
+                and box.font_size <= start.font_size + 0.5
+                and box.bbox[0] >= start.bbox[0] - 0.02
+            ]
+            caption_boxes.sort(key=lambda box: (box.bbox[1], box.bbox[0]))
+            if not caption_boxes:
+                continue
+            last_bottom = caption_boxes[0].bbox[3]
+            contiguous: list[TextBox] = []
+            for box in caption_boxes:
+                if contiguous and box.bbox[1] - last_bottom > 0.018:
+                    break
+                contiguous.append(box)
+                last_bottom = max(last_bottom, box.bbox[3])
+            caption_boxes = contiguous
+            prior = [box for box in boxes if box.bbox[3] < start.bbox[1] - 0.005 and not _is_page_number(box)]
+            if len(prior) < 3:
+                continue
+            y0 = max(0.0, min(box.bbox[1] for box in prior) - 0.01)
+            graphic_bbox = _bounded_bbox(0.14, y0, 0.86, start.bbox[1] - 0.008)
+            graphic_box = TextBox(page.number, "", graphic_bbox, 0.0, 1.0)
+            label_match = re.match(r"^(Fig\.\s*\d+)", start.text)
+            label = label_match.group(1) if label_match else "Figure"
+            figures.append(
+                ContentBlock(
+                    page.number,
+                    _join_lines(caption_boxes),
+                    [graphic_box],
+                    f"figure:{label}",
+                    caption_boxes=caption_boxes,
+                )
+            )
+            consumed.update(caption_boxes)
+            consumed.update(box for box in prior if _intersection(box.bbox, graphic_bbox) > 0)
+    return figures, consumed
+
+
+def _table_omissions(pages: list[PageData]) -> tuple[list[dict[str, Any]], set[TextBox]]:
+    omissions: list[dict[str, Any]] = []
+    consumed: set[TextBox] = set()
+    for page in pages:
+        boxes = sorted(page.native, key=lambda box: (box.bbox[1], box.bbox[0]))
+        for start in [box for box in boxes if re.match(r"^Table\s+\d+\b", box.text)]:
+            candidates = [box for box in boxes if box.bbox[1] >= start.bbox[1]]
+            table_boxes: list[TextBox] = []
+            for box in candidates:
+                if table_boxes and box.font_size >= 9.5 and box.bbox[1] - table_boxes[-1].bbox[3] > 0.015:
+                    break
+                table_boxes.append(box)
+            if len(table_boxes) < 2:
+                continue
+            consumed.update(table_boxes)
+            bbox = _bounded_bbox(
+                min(box.bbox[0] for box in table_boxes),
+                min(box.bbox[1] for box in table_boxes),
+                max(box.bbox[2] for box in table_boxes),
+                max(box.bbox[3] for box in table_boxes),
+            )
+            evidence = TextBox(page.number, start.text, bbox, start.font_size)
+            omissions.append(
+                _omission(
+                    evidence,
+                    "other",
+                    "Table detected, but reliable cell structure cannot yet be reconstructed.",
+                )
+            )
+    return omissions, consumed
+
+
+def _box_area(box: TextBox) -> float:
+    return (box.bbox[2] - box.bbox[0]) * (box.bbox[3] - box.bbox[1])
+
+
+def _excluded_from_math(box: TextBox, regions: list[tuple[int, Iterable[float]]]) -> bool:
+    area = _box_area(box)
+    return any(
+        page == box.page and area > 0 and _intersection(box.bbox, bbox) / area >= 0.2
+        for page, bbox in regions
+    )
+
+
+def _natural_word_count(text: str) -> int:
+    return sum(len(word) >= 3 for word in re.findall(r"[A-Za-z]+", text))
+
+
+def _math_signal_count(text: str) -> int:
+    return len(re.findall(r"[0-9=+−<>√Σ∆δφϕηµενπτ|⌊⌋]", text))
+
+
+def _formula_only_fragment(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped or _natural_word_count(stripped) or re.search(r"\(\d{4}\)", stripped):
+        return False
+    tokens = re.findall(r"[A-Za-z]+", stripped)
+    single_letter_tokens = sum(len(token) <= 2 for token in tokens)
+    symbol_only = re.fullmatch(r"[^A-Za-z0-9]+", stripped) is not None
+    return _math_signal_count(stripped) > 0 or single_letter_tokens >= 2 or symbol_only
+
+
+def _display_formula_omissions(
+    pages: list[PageData],
+    excluded_regions: list[tuple[int, Iterable[float]]] | None = None,
+) -> tuple[list[dict[str, Any]], set[TextBox]]:
+    """Detect display-math regions without claiming semantic completeness."""
+    omissions: list[dict[str, Any]] = []
+    consumed: set[TextBox] = set()
+    excluded_regions = excluded_regions or []
+    for page in pages:
+        boxes = [
+            box
+            for box in sorted(page.native, key=lambda box: (box.bbox[1], box.bbox[0]))
+            if not _excluded_from_math(box, excluded_regions)
+        ]
+        seeds = [
+            box
+            for box in boxes
+            if "=" in box.text
+            and _natural_word_count(box.text) <= 2
+            and _math_signal_count(box.text) >= 3
+            and box.bbox[2] - box.bbox[0] >= 0.1
+        ]
+        for seed in seeds:
+            if seed in consumed:
+                continue
+            center = (seed.bbox[1] + seed.bbox[3]) / 2
+            cluster = [
+                box
+                for box in boxes
+                if abs((box.bbox[1] + box.bbox[3]) / 2 - center) <= 0.018
+                and (_natural_word_count(box.text) <= 2 or box.font_size < seed.font_size * 0.85)
+            ]
+            if len(cluster) < 2:
+                continue
+            consumed.update(cluster)
+            bbox = _bounded_bbox(
+                min(box.bbox[0] for box in cluster),
+                min(box.bbox[1] for box in cluster),
+                max(box.bbox[2] for box in cluster),
+                max(box.bbox[3] for box in cluster),
+            )
+            omissions.append(
+                _omission(
+                    TextBox(page.number, seed.text, bbox, seed.font_size),
+                    "other",
+                    "Detected display-math region; semantic formula recovery remains partial.",
+                )
+            )
+    return omissions, consumed
+
+
+def _append_text(
+    blocks: list[ContentBlock], box: TextBox, kind: str = "paragraph", *, force_new: bool = False
+) -> None:
+    previous = blocks[-1] if blocks else None
+    if not force_new and previous is not None and previous.kind == kind:
+        last = previous.boxes[-1]
+        same_page = last.page == box.page
+        vertical_gap = box.bbox[1] - last.bbox[3] if same_page else box.bbox[1] + (1 - last.bbox[3])
+        recent = previous.boxes[-4:]
+        same_column = any(abs(candidate.bbox[0] - box.bbox[0]) < 0.08 for candidate in recent)
+        same_baseline = same_page and abs(last.bbox[1] - box.bbox[1]) < 0.004
+        expected_left = min(candidate.bbox[0] for candidate in recent)
+        first_line_indent = same_page and box.bbox[0] > expected_left + 0.015 and not same_baseline
+        if vertical_gap < 0.035 and (same_column or same_baseline) and not first_line_indent:
+            previous.text = _join_lines([TextBox(box.page, previous.text, last.bbox), box])
+            previous.boxes.append(box)
+            return
+    blocks.append(ContentBlock(box.page, box.text, [box], kind))
+
+
+def _group_blocks(pages: list[PageData]) -> StructureResult:
     all_boxes = [box for page in pages for box in page.native]
     if not all_boxes:
         raise ConversionError(
@@ -362,78 +850,192 @@ def _group_blocks(pages: list[PageData]) -> tuple[ContentBlock, list[ContentBloc
         for box in pages[0].native
         if box.bbox[1] < 0.45 and (score := _title_candidate_score(box)) is not None
     ]
-    if first_candidates:
-        title_box = max(first_candidates, key=lambda item: item[0])[1]
-    else:
-        horizontal = [box for box in pages[0].native if not _is_marginal_vertical_stamp(box)]
-        title_box = max(horizontal or pages[0].native, key=lambda box: (box.font_size, len(box.text)))
+    title_box = (
+        max(first_candidates, key=lambda item: item[0])[1]
+        if first_candidates
+        else max(pages[0].native, key=lambda box: (box.font_size, len(box.text)))
+    )
     title = ContentBlock(1, title_box.text, [title_box], "title", "title-000002")
+    front, consumed = _front_matter(pages, title_box)
+    figures, figure_consumed = _figure_blocks(pages)
+    consumed.update(figure_consumed)
+    table_omissions, table_consumed = _table_omissions(pages)
+    consumed.update(table_consumed)
+    math_exclusions: list[tuple[int, Iterable[float]]] = [
+        (figure.page, figure.boxes[0].bbox) for figure in figures
+    ]
+    math_exclusions.extend((box.page, box.bbox) for figure in figures for box in figure.caption_boxes)
+    math_exclusions.extend(
+        (int(omission["physical_page"]), cast(list[float], omission["bbox"])) for omission in table_omissions
+    )
+    formula_omissions, formula_consumed = _display_formula_omissions(pages, math_exclusions)
+    consumed.update(formula_consumed)
+    figure_by_page_y = {
+        (figure.page, round(figure.caption_boxes[0].bbox[1], 6)): figure for figure in figures
+    }
+    omissions: list[dict[str, Any]] = []
+    omissions.extend(table_omissions)
+    omissions.extend(formula_omissions)
     blocks: list[ContentBlock] = []
+    references_started = False
+    has_reference_heading = any(
+        box.text.strip().casefold() == "references" for page in pages for box in page.native
+    )
+    references: list[ContentBlock] = []
+    current_reference: ContentBlock | None = None
+    paragraph_barrier = False
     for page in pages:
-        ordered = [
-            box
-            for box in _reading_order(page.native)
-            if box is not title_box and not _is_marginal_vertical_stamp(box)
+        ordered = _reading_order(page.native)
+        if any(box.text.strip().casefold() == "references" for box in page.native):
+            ordered = sorted(page.native, key=lambda box: (box.bbox[1], box.bbox[0]))
+        font_sizes = [
+            box.font_size
+            for box in ordered
+            if box not in consumed and box.font_size >= 8 and not _is_page_number(box)
         ]
-        font_sizes = [box.font_size for box in ordered if box.font_size > 0]
-        median_font = statistics.median(font_sizes) if font_sizes else 0.0
+        median_font = statistics.median(font_sizes) if font_sizes else 10.0
+        prose_boxes = [
+            box
+            for box in ordered
+            if box.font_size >= median_font * 0.85 and _natural_word_count(box.text) >= 1
+        ]
         for box in ordered:
-            is_heading = bool(
-                re.match(r"^(?:[A-Z]\d+|[IVXLCDM]+|\d+(?:\.\d+)*)\.?\s+[A-Z]", box.text)
-                and len(box.text) <= 120
-                and box.font_size >= median_font * 1.1
-            )
-            if is_heading:
-                blocks.append(ContentBlock(page.number, box.text, [box], "heading"))
+            if box in consumed:
+                if box in formula_consumed or box in table_consumed:
+                    paragraph_barrier = True
+                figure = figure_by_page_y.get((box.page, round(box.bbox[1], 6)))
+                if figure is not None:
+                    blocks.append(figure)
                 continue
-            previous = blocks[-1] if blocks else None
-            same_page = previous is not None and previous.page == page.number
-            starts_reference = re.match(r"^\[\d+\]", box.text) is not None
-            outdented = previous is not None and box.bbox[0] < previous.boxes[-1].bbox[0] - 0.02
-            same_column = previous and abs(previous.boxes[-1].bbox[0] - box.bbox[0]) < 0.08
-            vertical_gap = box.bbox[1] - previous.boxes[-1].bbox[3] if previous else 1.0
-            compatible = (
-                previous
-                and same_page
-                and previous.kind == "paragraph"
-                and same_column
-                and vertical_gap < 0.02
-                and not starts_reference
-                and not outdented
+            if _is_page_number(box):
+                omissions.append(
+                    _omission(box, "page-number", "Printed page number is not canonical article content.")
+                )
+                continue
+            if _is_marginal_vertical_stamp(box):
+                omissions.append(
+                    _omission(
+                        box,
+                        "page-header",
+                        "Repository side stamp is recorded as source metadata, not body text.",
+                    )
+                )
+                continue
+            overlay_math = bool(
+                box.font_size < median_font * 0.8
+                and any(
+                    other is not box and min(box.bbox[3], other.bbox[3]) > max(box.bbox[1], other.bbox[1])
+                    for other in prose_boxes
+                )
             )
-            if compatible and not previous.text.endswith((".", "?", "!", ":")):
-                next_word = box.text.split(maxsplit=1)[0].lower()
-                if previous.text.endswith("-") and next_word in {"and", "or"}:
-                    previous.text += " " + box.text
-                elif previous.text.endswith("-") and next_word.startswith(("and-", "or-")):
-                    previous.text += box.text
-                elif previous.text.endswith("-"):
-                    previous.text = previous.text.removesuffix("-") + box.text
+            if overlay_math or _formula_only_fragment(box.text):
+                omissions.append(
+                    _omission(
+                        box,
+                        "other",
+                        "Isolated mathematical typesetting fragment cannot yet be reconstructed reliably.",
+                    )
+                )
+                continue
+            is_heading = (
+                len(box.text) <= 140
+                and box.font_size >= median_font * 1.15
+                and bool(re.search(r"[A-Za-z]", box.text))
+            )
+            if box.text.strip().casefold() == "references":
+                references_started = True
+                references.append(ContentBlock(box.page, box.text.strip(), [box], "reference-heading"))
+                current_reference = None
+                continue
+            if not has_reference_heading and not references_started and re.match(r"^\[\d+\]", box.text):
+                references_started = True
+            if references_started:
+                if re.match(r"^\[\d+\]", box.text):
+                    current_reference = ContentBlock(box.page, box.text, [box], "reference")
+                    references.append(current_reference)
+                elif current_reference is not None:
+                    current_reference.text = _join_lines(
+                        [TextBox(box.page, current_reference.text, current_reference.boxes[-1].bbox), box]
+                    )
+                    current_reference.boxes.append(box)
                 else:
-                    previous.text += " " + box.text
-                previous.boxes.append(box)
-            else:
-                blocks.append(ContentBlock(page.number, box.text, [box]))
-    return title, blocks
+                    omissions.append(
+                        _omission(box, "other", "Reference continuation could not be assigned safely.")
+                    )
+                continue
+            if is_heading:
+                paragraph_barrier = False
+                kind = "heading:2" if re.match(r"^[A-Z]\d+\.", box.text) else "heading:1"
+                previous_heading = blocks[-1] if blocks and blocks[-1].kind.startswith("heading:") else None
+                if (
+                    previous_heading is not None
+                    and previous_heading.page == box.page
+                    and box.bbox[1] - previous_heading.boxes[-1].bbox[3] < 0.02
+                    and abs(box.font_size - previous_heading.boxes[-1].font_size) < 0.6
+                ):
+                    previous_heading.text = _join_lines([*previous_heading.boxes, box])
+                    previous_heading.boxes.append(box)
+                elif blocks and blocks[-1].kind == kind and blocks[-1].page == box.page:
+                    blocks[-1].text = _join_lines([*blocks[-1].boxes, box])
+                    blocks[-1].boxes.append(box)
+                else:
+                    blocks.append(ContentBlock(box.page, box.text, [box], kind))
+                continue
+            _append_text(blocks, box, force_new=paragraph_barrier)
+            paragraph_barrier = False
+    blocks.extend(references)
+    _assign_ids(front, blocks)
+    for number, omission in enumerate(omissions, 1):
+        omission["id"] = f"omit-{number:06d}"
+    return StructureResult(title, front, blocks, omissions)
 
 
-def _assign_ids(blocks: list[ContentBlock]) -> None:
-    paragraph = 0
-    section = 0
-    title = 2
+def _assign_ids(front: FrontMatter, blocks: list[ContentBlock]) -> None:
+    counters = {"paragraph": 0, "section": 0, "title": 2, "ref": 0, "fig": 0, "caption": 0}
+    for number, author in enumerate(front.authors, 1):
+        author.element_id = f"contrib-{number:06d}"
+        author.child_ids = [f"name-{number:06d}"]
+    for number, affiliation in enumerate(front.affiliations, 1):
+        affiliation.element_id = f"aff-{number:06d}"
+    if front.abstract:
+        front.abstract.element_id = "abstract-000001"
+        counters["paragraph"] += 1
+        front.abstract.child_ids = [f"p-{counters['paragraph']:06d}"]
+    if front.publication_date:
+        front.publication_date.element_id = "pub-date-000001"
+    if front.contribution_note:
+        front.contribution_note.element_id = "fn-000001"
+        counters["paragraph"] += 1
+        front.contribution_note.child_ids = [f"p-{counters['paragraph']:06d}"]
     for block in blocks:
-        if block.kind == "heading":
-            section += 1
-            block.element_id = f"sec-{section:06d}"
-            title += 1
-            block.kind = f"heading:title-{title:06d}"
+        if block.kind.startswith("heading:"):
+            counters["section"] += 1
+            block.element_id = f"sec-{counters['section']:06d}"
+            counters["title"] += 1
+            block.child_ids = [f"title-{counters['title']:06d}"]
+        elif block.kind == "reference-heading":
+            counters["title"] += 1
+            block.element_id = f"title-{counters['title']:06d}"
+        elif block.kind == "reference":
+            counters["ref"] += 1
+            block.element_id = f"ref-{counters['ref']:06d}"
+        elif block.kind.startswith("figure:"):
+            counters["fig"] += 1
+            counters["caption"] += 1
+            counters["paragraph"] += 1
+            block.element_id = f"fig-{counters['fig']:06d}"
+            block.child_ids = [
+                f"caption-{counters['caption']:06d}",
+                f"p-{counters['paragraph']:06d}",
+            ]
         else:
-            paragraph += 1
-            block.element_id = f"p-{paragraph:06d}"
+            counters["paragraph"] += 1
+            block.element_id = f"p-{counters['paragraph']:06d}"
 
 
 def _build_xml(
     title: ContentBlock,
+    front_matter: FrontMatter,
     blocks: list[ContentBlock],
     publication_id: str,
     publication_label: str,
@@ -486,18 +1088,118 @@ def _build_xml(
     title_group = etree.SubElement(meta, "title-group")
     article_title = etree.SubElement(title_group, "article-title", id=title.element_id)
     article_title.text = title.text
+    if front_matter.authors:
+        contrib_group = etree.SubElement(meta, "contrib-group")
+        for author in front_matter.authors:
+            contrib = etree.SubElement(
+                contrib_group,
+                "contrib",
+                id=author.element_id,
+                attrib={"contrib-type": "author"},
+            )
+            name = etree.SubElement(
+                contrib,
+                "name",
+                id=author.child_ids[0],
+                attrib={"name-style": "western"},
+            )
+            parts = author.text.rsplit(maxsplit=1)
+            if len(parts) == 2:
+                etree.SubElement(name, "surname").text = parts[1]
+                etree.SubElement(name, "given-names").text = parts[0]
+            else:
+                etree.SubElement(name, "surname").text = author.text
+            for rid in author.aff_rids:
+                xref = etree.SubElement(contrib, "xref", attrib={"ref-type": "aff", "rid": rid})
+                xref.text = str(int(rid.rsplit("-", 1)[1]))
+            if author.equal_contribution and front_matter.contribution_note:
+                xref = etree.SubElement(
+                    contrib,
+                    "xref",
+                    attrib={"ref-type": "author-notes", "rid": front_matter.contribution_note.element_id},
+                )
+                xref.text = "†"
+        for affiliation in front_matter.affiliations:
+            aff = etree.SubElement(meta, "aff", id=affiliation.element_id)
+            match = re.match(r"^(\d+)\s*(.*)$", affiliation.text)
+            if match:
+                etree.SubElement(aff, "label").text = match.group(1)
+                aff[-1].tail = " " + match.group(2)
+            else:
+                aff.text = affiliation.text
+        if front_matter.contribution_note:
+            note = front_matter.contribution_note
+            author_notes = etree.SubElement(meta, "author-notes")
+            fn = etree.SubElement(
+                author_notes,
+                "fn",
+                id=note.element_id,
+                attrib={"fn-type": "equal"},
+            )
+            etree.SubElement(fn, "label").text = "†"
+            note_text = re.sub(r"^†\s*", "", note.text)
+            etree.SubElement(fn, "p", id=note.child_ids[0]).text = note_text
+    if front_matter.publication_date:
+        date = front_matter.publication_date
+        _, day, month, year = date.kind.split(":")
+        pub_date = etree.SubElement(
+            meta,
+            "pub-date",
+            id=date.element_id,
+            attrib={"date-type": "preprint", "publication-format": "electronic"},
+        )
+        etree.SubElement(pub_date, "day").text = day
+        etree.SubElement(pub_date, "month").text = month
+        etree.SubElement(pub_date, "year").text = year
+    if front_matter.abstract:
+        abstract_block = front_matter.abstract
+        abstract = etree.SubElement(meta, "abstract", id=abstract_block.element_id)
+        etree.SubElement(abstract, "p", id=abstract_block.child_ids[0]).text = abstract_block.text
     body = etree.SubElement(article, "body")
     current = body
+    sections: dict[int, etree._Element] = {}
+    back = etree.Element("back")
+    ref_list: etree._Element | None = None
     for block in blocks:
         if block.kind.startswith("heading:"):
-            current = etree.SubElement(body, "sec", id=block.element_id)
-            heading = etree.SubElement(current, "title", id=block.kind.split(":", 1)[1])
+            level = int(block.kind.rsplit(":", 1)[1])
+            parent = body if level == 1 or 1 not in sections else sections[1]
+            current = etree.SubElement(parent, "sec", id=block.element_id)
+            sections[level] = current
+            for deeper in [value for value in sections if value > level]:
+                del sections[deeper]
+            heading = etree.SubElement(current, "title", id=block.child_ids[0])
             heading.text = block.text
+        elif block.kind == "reference-heading":
+            ref_list = etree.SubElement(back, "ref-list")
+            etree.SubElement(ref_list, "title", id=block.element_id).text = block.text
+        elif block.kind == "reference":
+            if ref_list is None:
+                ref_list = etree.SubElement(back, "ref-list")
+            ref = etree.SubElement(ref_list, "ref", id=block.element_id)
+            match = re.match(r"^\[(\d+)\]\s*(.*)$", block.text, re.DOTALL)
+            if match:
+                etree.SubElement(ref, "label").text = match.group(1)
+                etree.SubElement(ref, "mixed-citation").text = match.group(2)
+            else:
+                etree.SubElement(ref, "mixed-citation").text = block.text
+        elif block.kind.startswith("figure:"):
+            figure = etree.SubElement(current, "fig", id=block.element_id)
+            label = block.kind.split(":", 1)[1]
+            etree.SubElement(figure, "label").text = label
+            caption = etree.SubElement(figure, "caption", id=block.child_ids[0])
+            caption_text = re.sub(r"^Fig\.\s*\d+\s*", "", block.text, count=1)
+            etree.SubElement(caption, "p", id=block.child_ids[1]).text = caption_text
+            etree.SubElement(
+                figure,
+                "graphic",
+                attrib={f"{{{XLINK}}}href": f"../assets/content/figures/{block.element_id}.png"},
+            )
         else:
             paragraph = etree.SubElement(current, "p", id=block.element_id)
             paragraph.text = block.text
-    etree.SubElement(article, "back")
-    xml = etree.tostring(article, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+    article.append(back)
+    xml = etree.tostring(article, xml_declaration=True, encoding="UTF-8", pretty_print=False) + b"\n"
 
     meta_blocks = [title]
     if publication_sourced:
@@ -531,12 +1233,87 @@ def _build_xml(
                 "article-id-000001",
             ),
         ]
+    if front_matter.authors:
+        for author in front_matter.authors:
+            xml_name = "".join(reversed(author.text.rsplit(maxsplit=1)))
+            xref_text = "".join(str(int(rid.rsplit("-", 1)[1])) for rid in author.aff_rids)
+            if author.equal_contribution:
+                xref_text += "†"
+            meta_blocks.append(
+                ContentBlock(
+                    author.page,
+                    xml_name + xref_text,
+                    author.boxes,
+                    author.kind,
+                    author.element_id,
+                    child_ids=author.child_ids,
+                    revision_before=author.revision_before,
+                    aff_rids=author.aff_rids,
+                    equal_contribution=author.equal_contribution,
+                    derived_bbox=author.derived_bbox,
+                )
+            )
+            meta_blocks.append(
+                ContentBlock(
+                    author.page,
+                    xml_name,
+                    author.boxes,
+                    "name",
+                    author.child_ids[0],
+                    revision_before=author.revision_before,
+                    derived_bbox=author.derived_bbox,
+                )
+            )
+        meta_blocks.extend(front_matter.affiliations)
+        if front_matter.contribution_note:
+            note = front_matter.contribution_note
+            meta_blocks.append(note)
+            meta_blocks.append(
+                ContentBlock(
+                    note.page,
+                    re.sub(r"^†\s*", "", note.text),
+                    note.boxes,
+                    "contribution-note-paragraph",
+                    note.child_ids[0],
+                )
+            )
+    if front_matter.publication_date:
+        meta_blocks.append(front_matter.publication_date)
+    if front_matter.abstract:
+        meta_blocks.append(front_matter.abstract)
+        meta_blocks.append(
+            ContentBlock(
+                front_matter.abstract.page,
+                front_matter.abstract.text,
+                front_matter.abstract.boxes,
+                "abstract-paragraph",
+                front_matter.abstract.child_ids[0],
+            )
+        )
     expanded: list[ContentBlock] = []
     for block in blocks:
         if block.kind.startswith("heading:"):
             expanded.append(ContentBlock(block.page, block.text, block.boxes, "section", block.element_id))
+            expanded.append(ContentBlock(block.page, block.text, block.boxes, "title", block.child_ids[0]))
+        elif block.kind.startswith("figure:"):
+            expanded.append(block)
             expanded.append(
-                ContentBlock(block.page, block.text, block.boxes, "title", block.kind.split(":", 1)[1])
+                ContentBlock(
+                    block.page,
+                    re.sub(r"^Fig\.\s*\d+\s*", "", block.text, count=1),
+                    block.caption_boxes,
+                    "caption",
+                    block.child_ids[0],
+                )
+            )
+            expanded.append(
+                ContentBlock(
+                    block.page,
+                    re.sub(r"^Fig\.\s*\d+\s*", "", block.text, count=1),
+                    block.caption_boxes,
+                    "caption-paragraph",
+                    block.child_ids[1],
+                )
             )
         else:
             expanded.append(block)
@@ -561,6 +1338,36 @@ def _ocr_candidate(block: ContentBlock, page: PageData) -> tuple[str, float]:
     return " ".join(box.text for box in matches), sum(box.confidence for box in matches) / len(matches)
 
 
+def _write_figure_assets(blocks: list[ContentBlock], pages: list[PageData], root: Path) -> None:
+    page_by_number = {page.number: page for page in pages}
+    for block in blocks:
+        if not block.kind.startswith("figure:"):
+            continue
+        page = page_by_number[block.page]
+        x0, y0, x1, y1 = block.boxes[0].bbox
+        target = root / f"assets/content/figures/{block.element_id}.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with Image.open(page.image_path) as image:
+            crop = image.convert("RGB").crop(
+                (
+                    round(x0 * image.width),
+                    round(y0 * image.height),
+                    round(x1 * image.width),
+                    round(y1 * image.height),
+                )
+            )
+            crop.save(target, format="PNG", dpi=(300, 300), icc_profile=image.info.get("icc_profile"))
+        block.resources = [
+            {
+                "role": "normalized",
+                "path": f"assets/content/figures/{block.element_id}.png",
+                "media_type": "image/png",
+                "sha256": _sha256(target),
+                "source_id": "src-001",
+            }
+        ]
+
+
 def _records(
     blocks: list[ContentBlock], pages: list[PageData], revision_timestamp: str
 ) -> list[dict[str, Any]]:
@@ -576,36 +1383,62 @@ def _records(
             candidate_block = ContentBlock(page_number, block.text, boxes)
             ocr_text, confidence = _ocr_candidate(candidate_block, page)
             native_text = " ".join(box.text for box in boxes)
-            sources.append(
+            source_record: dict[str, Any] = {
+                "source_id": "src-001",
+                "physical_page": page_number,
+                "logical_page_id": f"lp-{page_number:06d}",
+                "page_image": f"assets/evidence/pages/src-001/page-{page_number:06d}.png",
+                "regions": [
+                    {"bbox": list(box.bbox)} for box in sorted(boxes, key=lambda b: (b.bbox[1], b.bbox[0]))
+                ],
+                "candidates": [
+                    {
+                        "method": "native-pdf",
+                        "engine": "poppler-pdftohtml",
+                        "engine_version": _poppler_version(),
+                        "text": native_text,
+                        "confidence": 1.0,
+                    },
+                    {
+                        "method": "ocr",
+                        "engine": "apple-vision",
+                        "engine_version": _vision_version(),
+                        "text": ocr_text,
+                        "confidence": round(confidence, 6),
+                    },
+                ],
+            }
+            if block.kind.startswith("figure:"):
+                source_record["candidates"] = []
+            sources.append(source_record)
+        revisions: list[dict[str, Any]] = []
+        if block.derived_bbox is not None and block.revision_before is not None:
+            evidence_box = block.boxes[0]
+            revisions.append(
                 {
-                    "source_id": "src-001",
-                    "physical_page": page_number,
-                    "logical_page_id": f"lp-{page_number:06d}",
-                    "page_image": f"assets/evidence/pages/src-001/page-{page_number:06d}.png",
-                    "regions": [
-                        {"bbox": list(box.bbox)}
-                        for box in sorted(boxes, key=lambda b: (b.bbox[1], b.bbox[0]))
-                    ],
-                    "candidates": [
+                    "timestamp": revision_timestamp,
+                    "actor": "software:paper2html-minimal-converter",
+                    "method": "automatic",
+                    "before": block.revision_before,
+                    "after": block.text,
+                    "reason": (
+                        "Segmented one author from a source-native multi-author line using layout geometry; "
+                        "the derived name bbox is approximate, while source regions retain the full "
+                        "Poppler run."
+                    ),
+                    "evidence": [
                         {
-                            "method": "native-pdf",
-                            "engine": "poppler-pdftohtml",
-                            "engine_version": _poppler_version(),
-                            "text": native_text,
-                            "confidence": 1.0,
-                        },
-                        {
-                            "method": "ocr",
-                            "engine": "apple-vision",
-                            "engine_version": _vision_version(),
-                            "text": ocr_text,
-                            "confidence": round(confidence, 6),
-                        },
+                            "source_id": "src-001",
+                            "physical_page": evidence_box.page,
+                            "page_image": f"assets/evidence/pages/src-001/page-{evidence_box.page:06d}.png",
+                            "bbox": list(evidence_box.bbox),
+                        }
                     ],
+                    "x-derived-bbox": list(block.derived_bbox),
+                    "x-segmentation-method": "character-proportional-layout-interpolation",
                 }
             )
-        revisions: list[dict[str, Any]] = []
-        if block.kind == "derived-issn":
+        elif block.kind == "derived-issn":
             evidence_box = block.boxes[0]
             revisions.append(
                 {
@@ -626,6 +1459,28 @@ def _records(
                     "x-registry": ARXIV_ISSN_REGISTRY,
                 }
             )
+        elif block.revision_before is not None:
+            evidence_box = block.boxes[0]
+            revisions.append(
+                {
+                    "timestamp": revision_timestamp,
+                    "actor": "software:paper2html-minimal-converter",
+                    "method": "automatic",
+                    "before": block.revision_before,
+                    "after": block.text,
+                    "reason": (
+                        "Parsed structured publication metadata from the source-visible repository stamp."
+                    ),
+                    "evidence": [
+                        {
+                            "source_id": "src-001",
+                            "physical_page": evidence_box.page,
+                            "page_image": f"assets/evidence/pages/src-001/page-{evidence_box.page:06d}.png",
+                            "bbox": list(evidence_box.bbox),
+                        }
+                    ],
+                }
+            )
         records.append(
             {
                 "element_id": block.element_id,
@@ -634,6 +1489,7 @@ def _records(
                 "sources": sources,
                 "decision": {"method": "reconciled", "confidence": 0.8},
                 "revisions": revisions,
+                **({"resources": block.resources} if block.resources else {}),
             }
         )
     return records
@@ -1156,8 +2012,7 @@ def convert_pdf(pdf: Path, output: Path, options: ConversionOptions | None = Non
             if rotation in {90, 270}:
                 width_pt, height_pt = height_pt, width_pt
             pages.append(PageData(number, width_pt, height_pt, rotation, image_path, *pixels, native, ocr))
-        title, body_blocks = _group_blocks(pages)
-        _assign_ids(body_blocks)
+        structure = _group_blocks(pages)
         joined_native = " ".join(box.text for page in pages for box in page.native)
         arxiv_match = re.search(r"(?:arXiv:)?(\d{4}\.\d{4,5}v\d+)", joined_native, re.IGNORECASE)
         if arxiv_match:
@@ -1172,11 +2027,12 @@ def convert_pdf(pdf: Path, output: Path, options: ConversionOptions | None = Non
             publication_id = pdf.stem
             publication_label = "Unknown publication"
             publication_id_type = "publisher-id"
-            publication_box = title.boxes[0]
+            publication_box = structure.title.boxes[0]
             publication_sourced = False
         xml, addressable = _build_xml(
-            title,
-            body_blocks,
+            structure.title,
+            structure.front,
+            structure.blocks,
             publication_id,
             publication_label,
             publication_box,
@@ -1185,6 +2041,7 @@ def convert_pdf(pdf: Path, output: Path, options: ConversionOptions | None = Non
         )
         (root / "content").mkdir(parents=True)
         (root / "content/document.xml").write_bytes(xml)
+        _write_figure_assets(structure.blocks, pages, root)
         page_records = []
         for page in pages:
             page_records.append(
@@ -1208,7 +2065,7 @@ def convert_pdf(pdf: Path, output: Path, options: ConversionOptions | None = Non
         )
         _jsonl_dump(root / "provenance/pages.jsonl", page_records)
         _jsonl_dump(root / "provenance/elements.jsonl", _records(addressable, pages, created_at))
-        _jsonl_dump(root / "provenance/omissions.jsonl", [])
+        _jsonl_dump(root / "provenance/omissions.jsonl", structure.omissions)
         source_sha = _sha256(pdf)
         manifest = {
             "$schema": MANIFEST_SCHEMA,

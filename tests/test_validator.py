@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from lxml import etree
 
-from validator.resources import ResourceManager
-from validator.validator import (
+from src.validator.resources import ResourceManager
+from src.validator.validator import (
     ValidationOptions,
     _xml_parser,
     validate_package,
@@ -144,7 +144,7 @@ def test_formula_parser_timeout_is_operational_failure(
     def timeout(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired("formula-check", 10)
 
-    monkeypatch.setattr("validator.validator.subprocess.run", timeout)
+    monkeypatch.setattr("src.validator.validator.subprocess.run", timeout)
     result = validate_package(
         root,
         ValidationOptions(

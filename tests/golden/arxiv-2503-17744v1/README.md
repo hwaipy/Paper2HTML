@@ -7,4 +7,7 @@ does not redistribute the PDF.
 contains regression digests and page-render summaries. Neither directory is a
 complete P2H Package because the required page PNGs are intentionally absent.
 
+`quality.json` records the machine-checkable stage-5 semantic baseline and its
+explicit remaining limitations.
+
 See `GOLDEN_TESTS.md` for the comparison and guarded update commands.

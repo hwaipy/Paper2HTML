@@ -8,6 +8,11 @@ The `expected/` directory and `projection.json` are regression evidence, not a
 complete P2H Package. They must never be described as conforming or passed to
 the package validator on their own: P2H Package 0.1 requires every page PNG.
 
+`quality.json` is the machine-readable semantic quality checklist for the same
+run. It deliberately reports `partial` while tables, formulae, and independent
+page coverage remain incomplete. Projection comparison includes this report and
+normalized figure-resource hashes.
+
 ## Fast offline regression
 
 Once the repository's Python development environment is installed, a fresh

@@ -13,10 +13,10 @@ from typing import Any
 import pytest
 from PIL import Image
 
-from converter import golden as golden_module
-from converter import pipeline
-from converter.golden import GoldenError, build_projection, compare_projection, update_golden
-from converter.pipeline import ConversionError, ConversionOptions, TextBox
+from src.converter import golden as golden_module
+from src.converter import pipeline
+from src.converter.golden import GoldenError, build_projection, compare_projection, update_golden
+from src.converter.pipeline import ConversionError, ConversionOptions, TextBox
 
 
 def _fake_engines(monkeypatch: Any) -> None:
@@ -84,6 +84,102 @@ def _fake_engines(monkeypatch: Any) -> None:
         write_report=write_report,
     )
     monkeypatch.setattr(pipeline.importlib, "import_module", lambda _: fake_validator)
+
+
+def test_reading_order_respects_visual_bands_and_columns() -> None:
+    boxes = [
+        TextBox(1, "full-width figure caption", (0.1, 0.30, 0.9, 0.34), 10),
+        TextBox(1, "left first", (0.1, 0.40, 0.45, 0.44), 10),
+        TextBox(1, "left second", (0.1, 0.50, 0.45, 0.54), 10),
+        TextBox(1, "right first", (0.55, 0.40, 0.9, 0.44), 10),
+        TextBox(1, "right second", (0.55, 0.50, 0.9, 0.54), 10),
+    ]
+    assert [box.text for box in pipeline._reading_order(boxes)] == [
+        "full-width figure caption",
+        "left first",
+        "left second",
+        "right first",
+        "right second",
+    ]
+
+
+def test_line_joining_preserves_compounds_and_repairs_clear_suffix_breaks() -> None:
+    def joined(left: str, right: str) -> str:
+        return pipeline._join_lines(
+            [TextBox(1, left, (0.1, 0.1, 0.8, 0.2)), TextBox(1, right, (0.1, 0.2, 0.8, 0.3))]
+        )
+
+    assert joined("atmospheric turbulence-", "induced distortion") == (
+        "atmospheric turbulence-induced distortion"
+    )
+    assert joined("an open-", "channel protocol") == "an open-channel protocol"
+    assert joined("a free-", "space channel") == "a free-space channel"
+    assert joined("a mile-", "stone result") == "a milestone result"
+    assert joined("the pho-", "tons arrived") == "the photons arrived"
+    assert joined("a measure-", "ment result") == "a measurement result"
+    assert joined("min-", "and max-entropies") == "min- and max-entropies"
+
+
+def test_inrun_soft_hyphens_use_language_evidence() -> None:
+    assert pipeline._repair_token_spacing("Entan-gling independent photons") == (
+        "Entangling independent photons"
+    )
+    assert pipeline._repair_token_spacing("the repeater-less bound") == "the repeaterless bound"
+    for compound in (
+        "turbulence-induced",
+        "open-channel",
+        "free-space",
+        "rate-distance",
+        "finite-key",
+        "Satellite-to-ground",
+    ):
+        assert pipeline._repair_token_spacing(compound) == compound
+
+
+def test_display_formula_is_one_complete_omission() -> None:
+    page = pipeline.PageData(1, 100, 100, 0, Path("unused"), 100, 100)
+    prose_before = TextBox(1, "regarded as", (0.2, 0.25, 0.4, 0.27), 10)
+    pieces = [
+        TextBox(1, "δφ = 2πτδν +", (0.4, 0.28, 0.7, 0.30), 10),
+        TextBox(1, "∆L(τ)", (0.55, 0.27, 0.65, 0.29), 10),
+        TextBox(1, "(1)", (0.8, 0.28, 0.84, 0.30), 10),
+    ]
+    prose_after = TextBox(1, "where the channel fluctuates", (0.2, 0.31, 0.8, 0.33), 10)
+    page.native = [prose_before, *pieces, prose_after]
+    omissions, consumed = pipeline._display_formula_omissions([page])
+    assert len(omissions) == 1
+    assert consumed == set(pieces)
+    assert prose_before not in consumed and prose_after not in consumed
+
+
+def test_display_formula_detection_excludes_figure_overlap() -> None:
+    page = pipeline.PageData(1, 100, 100, 0, Path("unused"), 100, 100)
+    chart_label = TextBox(1, "QBER = 0.14", (0.55, 0.25, 0.75, 0.27), 10)
+    chart_tick = TextBox(1, "10 −7", (0.30, 0.27, 0.36, 0.29), 8)
+    page.native = [chart_label, chart_tick]
+    omissions, consumed = pipeline._display_formula_omissions([page], [(1, (0.1, 0.1, 0.9, 0.5))])
+    assert omissions == []
+    assert consumed == set()
+
+
+def test_formula_only_fragments_and_prose_are_distinguished() -> None:
+    for fragment in ("− | −", "v x y z", "C (k)−C (k)", "×", "{", "∼"):
+        assert pipeline._formula_only_fragment(fragment)
+    for prose in (
+        "where R is the key rate",
+        "encoding satisfies 1 cos(φ + ∆φ(t)) < Λ",
+        "224011 (2012)",
+    ):
+        assert not pipeline._formula_only_fragment(prose)
+
+
+def test_formula_omission_forces_paragraph_boundary() -> None:
+    blocks: list[pipeline.ContentBlock] = []
+    before = TextBox(1, "approximatively regarded as", (0.2, 0.2, 0.8, 0.22), 10)
+    after = TextBox(1, "where the channel fluctuates", (0.2, 0.28, 0.8, 0.30), 10)
+    pipeline._append_text(blocks, before)
+    pipeline._append_text(blocks, after, force_new=True)
+    assert [block.text for block in blocks] == [before.text, after.text]
 
 
 def _write_descriptor(path: Path, source: bytes) -> dict[str, Any]:
@@ -670,7 +766,7 @@ def test_reference_boundaries_and_order_are_preserved(tmp_path: Path) -> None:
         TextBox(1, "(2013)", (0.20, 0.24, 0.25, 0.25), 10),
     ]
     page = pipeline.PageData(1, 72, 72, 0, image, 300, 300, boxes, boxes)
-    _, blocks = pipeline._group_blocks([page])
+    blocks = pipeline._group_blocks([page]).blocks
     texts = [block.text for block in blocks]
     assert texts == [
         "224011 (2012)",
@@ -702,9 +798,57 @@ def test_vertical_margin_stamp_cannot_become_article_title(tmp_path: Path) -> No
         [stamp, real_title, body],
         [stamp, real_title, body],
     )
-    title, blocks = pipeline._group_blocks([page])
-    assert title.text == real_title.text
+    structure = pipeline._group_blocks([page])
+    assert structure.title.text == real_title.text
+    blocks = structure.blocks
     body_texts = [block.text for block in blocks]
     assert real_title.text not in body_texts
     assert stamp.text not in body_texts
     assert body.text in body_texts
+
+
+def test_front_matter_and_cross_page_abstract_are_promoted(tmp_path: Path) -> None:
+    image = tmp_path / "page.png"
+    Image.new("RGB", (300, 300), "white").save(image)
+    first = [
+        TextBox(1, "A Reliable Article Title", (0.2, 0.10, 0.8, 0.14), 17),
+        TextBox(1, "Ada Lovelace , Alan Turing", (0.25, 0.18, 0.75, 0.20), 12),
+        TextBox(1, "1Example Research Institute, London.", (0.2, 0.23, 0.8, 0.25), 11),
+        TextBox(1, "Abstract", (0.45, 0.50, 0.55, 0.52), 9),
+        TextBox(1, "An abstract that continues to the next", (0.2, 0.55, 0.8, 0.57), 9),
+        TextBox(1, "page without becoming body text.", (0.2, 0.70, 0.8, 0.72), 9),
+        TextBox(1, "1", (0.49, 0.77, 0.51, 0.79), 10),
+    ]
+    second = [
+        TextBox(2, "The final abstract sentence.", (0.2, 0.09, 0.8, 0.11), 9),
+        TextBox(2, "Ordinary article body begins here.", (0.2, 0.20, 0.8, 0.22), 10),
+        TextBox(2, "2", (0.49, 0.77, 0.51, 0.79), 10),
+    ]
+    pages = [
+        pipeline.PageData(1, 72, 72, 0, image, 300, 300, first, first),
+        pipeline.PageData(2, 72, 72, 0, image, 300, 300, second, second),
+    ]
+    structure = pipeline._group_blocks(pages)
+    assert [author.text for author in structure.front.authors] == ["Ada Lovelace", "Alan Turing"]
+    assert len(structure.front.affiliations) == 1
+    assert structure.front.abstract is not None
+    assert structure.front.abstract.text.endswith("The final abstract sentence.")
+    assert " 1 " not in f" {structure.front.abstract.text} "
+    assert sum(item["type"] == "page-number" for item in structure.omissions) == 2
+
+
+def test_detected_table_is_explicitly_omitted(tmp_path: Path) -> None:
+    image = tmp_path / "page.png"
+    Image.new("RGB", (300, 300), "white").save(image)
+    boxes = [
+        TextBox(1, "Title", (0.2, 0.02, 0.8, 0.05), 20),
+        TextBox(1, "Table 1 Experimental values", (0.2, 0.10, 0.8, 0.12), 8),
+        TextBox(1, "Parameter Value", (0.2, 0.14, 0.8, 0.16), 8),
+        TextBox(1, "loss 27 dB", (0.2, 0.18, 0.8, 0.20), 8),
+        TextBox(1, "Body resumes here.", (0.2, 0.25, 0.8, 0.27), 10),
+    ]
+    page = pipeline.PageData(1, 72, 72, 0, image, 300, 300, boxes, boxes)
+    structure = pipeline._group_blocks([page])
+    reasons = [item["reason"] for item in structure.omissions]
+    assert "Table detected, but reliable cell structure cannot yet be reconstructed." in reasons
+    assert all("Table 1" not in block.text for block in structure.blocks)

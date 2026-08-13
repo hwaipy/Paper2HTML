@@ -24,13 +24,13 @@
     }
   },
   "package_id": "urn:uuid:1e9ffd99-e231-5fff-89a5-62827c54b8ca",
-  "document_sha256": "8304202a57cbb232541acc6609822ca9fc97fcfc6fc8b98e88aaf6b8d161de2b",
+  "document_sha256": "20924b8bbc2391986bd7d0a3b37ce2743ddce47aebb1dfdc3ee958d9f1890523",
   "pages_sha256": "46f339db29104334b9ec01e472a216929bdaf9777e84c735b37c02f11064cec8",
-  "elements_sha256": "93f0c497d988d11d0a858cc5a0e70fdaf35eee14635ed69c09e18ded585581ba",
-  "omissions_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "elements_sha256": "00b6b7b62d2b01810b7e33f134f4d7679ae1cdc39d883061a220ab8528c4ace9",
+  "omissions_sha256": "017a5e6e6b4c86cbf86eaa8a69d5e4d57399e567a951fe3da93066471ca0b17c",
   "page_count": 17,
-  "element_count": 397,
-  "omission_count": 0,
+  "element_count": 167,
+  "omission_count": 97,
   "page_images": [
     {
       "path": "assets/evidence/pages/src-001/page-000001.png",
@@ -177,8 +177,8 @@
     "statistics": {
       "sources": 1,
       "pages": 17,
-      "elements": 397,
-      "omissions": 0,
+      "elements": 167,
+      "omissions": 97,
       "errors": 1,
       "warnings": 0
     },
@@ -186,5 +186,85 @@
       "page_coverage_not_audited"
     ],
     "warning_codes": []
+  },
+  "content_quality": {
+    "format": "paper2html-content-quality-report",
+    "format_version": "2",
+    "package_id": "urn:uuid:1e9ffd99-e231-5fff-89a5-62827c54b8ca",
+    "status": "partial",
+    "metrics": {
+      "pages": 17,
+      "addressable_elements": 167,
+      "article_titles": 1,
+      "authors": 25,
+      "author_affiliation_xrefs": 64,
+      "equal_contribution_notes": 1,
+      "affiliations": 6,
+      "abstracts": 1,
+      "publication_dates": 1,
+      "body_sections": 4,
+      "body_paragraphs": 31,
+      "references": 55,
+      "figures": 3,
+      "tables": 0,
+      "formulas": 0,
+      "display_math_regions_omitted_with_evidence": 2,
+      "tables_omitted_with_evidence": 1,
+      "omissions": 97,
+      "page_number_omissions": 17,
+      "page_number_paragraphs": 0,
+      "short_fragment_paragraphs": 0,
+      "formula_only_paragraphs": 0
+    },
+    "criteria": {
+      "package_integrity": {
+        "status": "passed",
+        "findings": []
+      },
+      "xml_provenance_consistency": {
+        "status": "passed",
+        "findings": []
+      },
+      "resource_integrity": {
+        "status": "passed",
+        "findings": []
+      },
+      "front_matter": {
+        "status": "partial",
+        "reason": "Presence and source consistency are checked; semantic correctness still requires review."
+      },
+      "semantic_structure": {
+        "status": "partial",
+        "short_fragment_examples": []
+      },
+      "references": {
+        "status": "partial",
+        "labels_consecutive": true
+      },
+      "figures_tables_formulas": {
+        "status": "partial",
+        "reason": "Figures are normalized; unresolved table/formula semantics are explicit omissions."
+      },
+      "non_body_classification": {
+        "status": "partial",
+        "reason": "Heuristic classification has evidence but is not an independent coverage proof."
+      }
+    },
+    "omission_types": {
+      "other": 80,
+      "page-number": 17
+    },
+    "omission_reasons": {
+      "Detected display-math region; semantic formula recovery remains partial.": 2,
+      "Isolated mathematical typesetting fragment cannot yet be reconstructed reliably.": 77,
+      "Printed page number is not canonical article content.": 17,
+      "Table detected, but reliable cell structure cannot yet be reconstructed.": 1
+    },
+    "known_limitations": [
+      "Table structure is not yet reconstructed.",
+      "Display mathematics without reliable TeX is represented by a complete-region omission.",
+      "Semantic quality criteria remain partial until independently reviewed.",
+      "Independent visible-object page coverage is reported by the normative validator."
+    ]
   }
 }

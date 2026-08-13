@@ -83,13 +83,17 @@ Useful options:
 3. Extracts native PDF text runs and bounding boxes with Poppler.
 4. Independently OCRs the rendered PNGs with Apple Vision, retaining its text,
    confidence, and bounding boxes rather than copying native text.
-5. Joins native font runs into visual lines, applies a small deterministic
-   reading-order/paragraph heuristic, and emits one JATS 1.3 article.
+5. Joins native font runs into visual lines and applies deterministic geometry,
+   typography, reading-order, paragraph, front-matter, caption, section, and
+   reference heuristics before emitting one JATS 1.3 article.
 6. Writes page and element provenance. Each text element has both raw native
    and OCR candidates and normalized page coordinates.
-7. Writes the manifest, empty omissions file, validation report, and exhaustive
-   SHA-256 list, then runs the independent validator.
-8. Publishes the completed directory atomically. A failed run does not expose a
+7. Records excluded page numbers, unrecovered mathematical fragments, authorship
+   markers, and detected-but-unstructured tables in `omissions.jsonl`.
+8. Crops reliably bounded figures without their captions, writes the manifest,
+   validation report, and exhaustive SHA-256 list, then runs the independent
+   validator.
+9. Publishes the completed directory atomically. A failed run does not expose a
    partial result directory.
 
 The primary-source SHA-256 determines the UUIDv5 package ID. Element IDs and
@@ -105,12 +109,21 @@ This stage supports born-digital, article-like PDFs with extractable native
 text. It stops on image-only scanned PDFs; adding OCR-first structure recovery
 is later work.
 
-The semantic reconstruction is intentionally minimal:
+Semantic reconstruction is deterministic but still heuristic:
 
-- authors, affiliations, abstract, references, citations, figures, tables, and
-  formulae are not yet promoted to their full JATS element types;
-- visible figure and formula content may appear only as imperfect native text;
-- multi-column ordering and paragraph grouping are heuristic;
+- article title, authors, affiliations, abstract, source-visible publication date,
+  sections, paragraphs, reference entries, figures, and captions are promoted to
+  JATS when typography and geometry provide reliable boundaries;
+- author superscripts are geometrically associated with individual names and
+  emitted as affiliation and equal-contribution JATS links when their layout is
+  unambiguous. The original Poppler multi-author line remains the source region
+  and candidate; the narrower per-name bbox is explicitly recorded as an
+  approximate, automatically derived layout revision;
+- detected tables and display-math regions are explicitly omitted
+  with page evidence when reliable cell structure or TeX cannot be reconstructed;
+  partial formula text is never emitted as if it were complete semantics;
+- multi-column ordering, paragraph grouping, and document-type detection remain
+  heuristic;
 - generic non-arXiv PDFs receive transparent `Unknown publication` metadata;
 - JATS 1.3 requires an ISSN slot in `journal-meta`. When the page identifies
   arXiv, the converter derives arXiv.org ISSN `2331-8422` from the fixed ISSN
@@ -118,7 +131,7 @@ The semantic reconstruction is intentionally minimal:
   automatic revision records the derivation rule, registry URL, timestamp, and
   page evidence. Unknown publications retain an explicit empty
   `specific-use="not-applicable"` placeholder without false provenance;
-- no page headers, footers, or page numbers are classified as omissions yet;
+- printed page numbers and repository side stamps are excluded from body text;
 - Apple Vision is the only OCR backend in this stage.
 
 Most importantly, OCR text boxes are not a complete independent layout audit:
@@ -136,3 +149,12 @@ Recheck a generated package independently with:
 ```sh
 uv run python -m src.validator.cli OUTPUT_DIRECTORY
 ```
+
+Measure semantic reconstruction separately from package validity with:
+
+```sh
+uv run python -m src.converter.quality OUTPUT_DIRECTORY --json
+```
+
+The checklist and the committed case's measured before/after baseline are in
+`CONTENT_QUALITY.md`.
