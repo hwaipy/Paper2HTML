@@ -88,3 +88,31 @@ testdata/
 尚未整理的文件先放入 `testdata/incoming/`；下载文件、OCR 缓存、页面渲染结果等可再生成内容放入 `testdata/cache/`。
 
 少量、授权明确且适合在 CI 中运行的微型测试样例不属于大型测试数据。未来应将它们放在可提交的 `tests/fixtures/` 中。
+
+### 同步大型测试数据
+
+仓库根目录的 `sync_testdata.sh` 使用 `rclone` 在本地 `testdata/` 与外部 WebDAV 存储之间同步数据。先安装 `rclone`，并在本机创建名为 `paper2html-testdata` 的 WebDAV remote；远端 URL 应指向该同步账号的 `/home/` 目录。凭据只保存在本机的 rclone 配置中，不得写入仓库。
+
+默认的远端数据目录是 `/home/sync/pdf2html/testdata`。当 rclone remote 的 URL 指向 `https://webdav.hwaipy.cn/home/` 时，对应的 rclone 路径是：
+
+```text
+paper2html-testdata:sync/pdf2html/testdata
+```
+
+使用方法：
+
+```bash
+# 查看下载操作，但不传输文件
+./sync_testdata.sh pull --dry-run
+
+# 从远端下载新增或变更的文件
+./sync_testdata.sh pull
+
+# 查看上传操作，但不传输文件
+./sync_testdata.sh push --dry-run
+
+# 向远端上传新增或变更的文件
+./sync_testdata.sh push
+```
+
+`pull` 和 `push` 均不会删除目标端已有的额外文件。可以通过 `PAPER2HTML_TESTDATA_DIR` 修改本地目录，通过 `PAPER2HTML_TESTDATA_REMOTE` 修改 rclone 远端路径。
