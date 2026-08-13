@@ -16,7 +16,9 @@ from PIL import Image
 from src.converter import golden as golden_module
 from src.converter import pipeline
 from src.converter.golden import GoldenError, build_projection, compare_projection, update_golden
+from src.converter.models import EngineInfo, PDFInfo, RenderedPage, TextExtractionResult
 from src.converter.pipeline import ConversionError, ConversionOptions, TextBox
+from src.converter.tool_interfaces import ConversionTools
 
 
 def _fake_engines(monkeypatch: Any) -> None:
@@ -268,6 +270,60 @@ def test_conversion_builds_stable_package_skeleton(tmp_path: Path, monkeypatch: 
     assert issn["revisions"][0]["before"] == ""
     assert issn["revisions"][0]["after"] == "2331-8422"
     assert issn["revisions"][0]["x-registry"].startswith("https://portal.issn.org/")
+
+
+def test_conversion_accepts_replacement_tools_and_records_their_engines(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    _fake_engines(monkeypatch)
+    source = tmp_path / "paper.pdf"
+    source.write_bytes(b"%PDF-1.4\nreplacement-tools\n")
+    boxes = [
+        TextBox(1, "Replacement Tool Title", (0.1, 0.1, 0.8, 0.2), 24.0),
+        TextBox(1, "arXiv:2503.17744v1", (0.05, 0.02, 0.3, 0.05), 8.0),
+        TextBox(1, "Body from a replacement extractor.", (0.1, 0.3, 0.8, 0.35), 10.0),
+    ]
+
+    def render(_: Path, destination: Path, __: PDFInfo) -> list[RenderedPage]:
+        destination.mkdir(parents=True)
+        image_path = destination / "page-000001.png"
+        Image.new("RGB", (300, 300), "white").save(image_path, dpi=(300, 300))
+        return [RenderedPage(1, image_path, 300, 300)]
+
+    tools = ConversionTools(
+        inspector=SimpleNamespace(inspect=lambda _: PDFInfo(1, [(72.0, 72.0)], [0])),
+        renderer=SimpleNamespace(render=render),
+        native_text=SimpleNamespace(
+            extract=lambda *_: TextExtractionResult(
+                EngineInfo("replacement-native", "2.0"), [boxes], ["completed"]
+            )
+        ),
+        ocr=SimpleNamespace(
+            recognize=lambda *_: TextExtractionResult(
+                EngineInfo("replacement-ocr", "3.0"),
+                [[TextBox(1, box.text, box.bbox, confidence=0.9) for box in boxes]],
+                ["completed"],
+            )
+        ),
+        semantic_parser=SimpleNamespace(parse=lambda _, pages: pipeline._group_blocks(pages)),
+    )
+
+    output = tmp_path / "result"
+    pipeline.convert_pdf(
+        source,
+        output,
+        ConversionOptions(created_at="2026-08-12T00:00:00Z"),
+        tools=tools,
+    )
+    records = [json.loads(line) for line in (output / "provenance/elements.jsonl").read_text().splitlines()]
+    engines = {
+        (candidate["method"], candidate["engine"], candidate["engine_version"])
+        for record in records
+        for source_record in record["sources"]
+        for candidate in source_record["candidates"]
+    }
+    assert ("native-pdf", "replacement-native", "2.0") in engines
+    assert ("ocr", "replacement-ocr", "3.0") in engines
 
 
 def _tree_bytes(root: Path) -> dict[str, bytes]:

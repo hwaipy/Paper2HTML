@@ -103,6 +103,33 @@ matches it. With `--created-at`, both timestamps are fixed, so the complete
 package including `validation/report.json` and `checksums.sha256` is
 byte-reproducible for deterministic extraction engines.
 
+## Tool interfaces
+
+The pipeline depends on the static contracts in
+`src/converter/tool_interfaces.py`, rather than requiring a dynamic plugin
+system. `ConversionTools` groups five independently replaceable tools:
+
+- `PDFInspector`: PDF page count, point sizes, and rotations;
+- `PageRenderer`: canonical 300 DPI evidence PNGs;
+- `NativeTextExtractor`: native PDF text candidates and normalized boxes;
+- `OCREngine`: independent OCR candidates over rendered pages;
+- `SemanticParser`: document structure reconstructed from the source PDF and
+  collected page evidence (an implementation may use either or both).
+
+Their shared input and output values live in `src/converter/models.py`. Every
+text extraction result carries its real engine name and version, which are
+written to provenance instead of being inferred by the pipeline. The boundary
+checks in `src/converter/tool_validation.py` reject inconsistent page counts,
+page numbers, statuses, coordinates, confidence values, render locations, and
+noncanonical evidence DPI before package generation.
+
+`default_conversion_tools()` statically composes the current Poppler, Apple
+Vision, and heuristic implementations. A source-code integration can replace
+one or more implementations by constructing another `ConversionTools` value
+and passing it to `convert_pdf(..., tools=tools)`. No registry, entry point,
+runtime discovery, or CLI backend selection is involved. A replacement only
+needs to satisfy the same typed input/output contract and boundary validation.
+
 ## Honest current limits
 
 This stage supports born-digital, article-like PDFs with extractable native

@@ -20,8 +20,8 @@ import time
 import unicodedata
 import urllib.parse
 import uuid
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -31,6 +31,25 @@ import certifi
 from lxml import etree
 from PIL import Image
 from wordfreq import get_frequency_dict, zipf_frequency
+
+from .models import (
+    ContentBlock,
+    EngineInfo,
+    FrontMatter,
+    PageData,
+    PDFInfo,
+    RenderedPage,
+    StructureResult,
+    TextBox,
+    TextExtractionResult,
+)
+from .tool_interfaces import ConversionTools
+from .tool_validation import (
+    ToolContractError,
+    validate_pdf_info,
+    validate_rendered_pages,
+    validate_text_extraction,
+)
 
 PACKAGE_NAMESPACE = uuid.UUID("6d4d259c-105b-5fee-a87a-efd4ad4d9bf8")
 MANIFEST_SCHEMA = "https://hwaipy.github.io/Paper2HTML/schema/0.1/manifest.schema.json"
@@ -68,65 +87,6 @@ class ResolvedPDF:
     original_name: str
     source_url: str | None = None
     final_url: str | None = None
-
-
-@dataclass(frozen=True)
-class TextBox:
-    page: int
-    text: str
-    bbox: tuple[float, float, float, float]
-    font_size: float = 0.0
-    confidence: float = 1.0
-
-
-@dataclass
-class ContentBlock:
-    page: int
-    text: str
-    boxes: list[TextBox]
-    kind: str = "paragraph"
-    element_id: str = ""
-    child_ids: list[str] = field(default_factory=list)
-    caption_boxes: list[TextBox] = field(default_factory=list)
-    resources: list[dict[str, Any]] = field(default_factory=list)
-    revision_before: str | None = None
-    aff_rids: list[str] = field(default_factory=list)
-    equal_contribution: bool = False
-    derived_bbox: tuple[float, float, float, float] | None = None
-
-    @property
-    def regions(self) -> list[list[float]]:
-        return [list(box.bbox) for box in self.boxes]
-
-
-@dataclass
-class PageData:
-    number: int
-    width_pt: float
-    height_pt: float
-    rotation: int
-    image_path: Path
-    image_width: int
-    image_height: int
-    native: list[TextBox] = field(default_factory=list)
-    ocr: list[TextBox] = field(default_factory=list)
-
-
-@dataclass
-class FrontMatter:
-    authors: list[ContentBlock] = field(default_factory=list)
-    affiliations: list[ContentBlock] = field(default_factory=list)
-    abstract: ContentBlock | None = None
-    publication_date: ContentBlock | None = None
-    contribution_note: ContentBlock | None = None
-
-
-@dataclass
-class StructureResult:
-    title: ContentBlock
-    front: FrontMatter
-    blocks: list[ContentBlock]
-    omissions: list[dict[str, Any]]
 
 
 def _run(command: list[str], *, timeout: int = 300) -> subprocess.CompletedProcess[str]:
@@ -337,10 +297,14 @@ def _extract_vision(images: list[Path]) -> list[list[TextBox]]:
         timeout=max(600, len(images) * 120),
     )
     pages: list[list[TextBox]] = [[] for _ in images]
+    seen_pages: set[int] = set()
     try:
         for line in completed.stdout.splitlines():
             value = json.loads(line)
             page = int(value["page"])
+            if not 1 <= page <= len(images) or page in seen_pages:
+                raise ValueError(f"invalid or duplicate page number: {page}")
+            seen_pages.add(page)
             pages[page - 1] = [
                 TextBox(
                     page,
@@ -353,9 +317,9 @@ def _extract_vision(images: list[Path]) -> list[list[TextBox]]:
             ]
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ConversionError(f"cannot parse Vision OCR output: {exc}") from exc
-    if any(not page for page in pages):
-        missing = [str(i) for i, page in enumerate(pages, 1) if not page]
-        raise ConversionError(f"Vision OCR returned no text for page(s): {', '.join(missing)}")
+    if len(seen_pages) != len(images):
+        missing = [str(i) for i in range(1, len(images) + 1) if i not in seen_pages]
+        raise ConversionError(f"Vision OCR returned no result for page(s): {', '.join(missing)}")
     return pages
 
 
@@ -1369,7 +1333,11 @@ def _write_figure_assets(blocks: list[ContentBlock], pages: list[PageData], root
 
 
 def _records(
-    blocks: list[ContentBlock], pages: list[PageData], revision_timestamp: str
+    blocks: list[ContentBlock],
+    pages: list[PageData],
+    revision_timestamp: str,
+    native_engine: EngineInfo,
+    ocr_engine: EngineInfo,
 ) -> list[dict[str, Any]]:
     page_by_number = {page.number: page for page in pages}
     records: list[dict[str, Any]] = []
@@ -1383,6 +1351,7 @@ def _records(
             candidate_block = ContentBlock(page_number, block.text, boxes)
             ocr_text, confidence = _ocr_candidate(candidate_block, page)
             native_text = " ".join(box.text for box in boxes)
+            native_confidence = sum(box.confidence for box in boxes) / len(boxes)
             source_record: dict[str, Any] = {
                 "source_id": "src-001",
                 "physical_page": page_number,
@@ -1394,15 +1363,15 @@ def _records(
                 "candidates": [
                     {
                         "method": "native-pdf",
-                        "engine": "poppler-pdftohtml",
-                        "engine_version": _poppler_version(),
+                        "engine": native_engine.name,
+                        "engine_version": native_engine.version,
                         "text": native_text,
-                        "confidence": 1.0,
+                        "confidence": round(native_confidence, 6),
                     },
                     {
                         "method": "ocr",
-                        "engine": "apple-vision",
-                        "engine_version": _vision_version(),
+                        "engine": ocr_engine.name,
+                        "engine_version": ocr_engine.version,
                         "text": ocr_text,
                         "confidence": round(confidence, 6),
                     },
@@ -1506,6 +1475,60 @@ def _poppler_version() -> str:
 def _vision_version() -> str:
     output = _run(["sw_vers", "-productVersion"]).stdout.strip()
     return output or "unknown"
+
+
+class _PopplerInspector:
+    def inspect(self, pdf: Path) -> PDFInfo:
+        page_count, sizes, rotations = _pdf_metadata(pdf)
+        return PDFInfo(page_count, sizes, rotations)
+
+
+class _PopplerRenderer:
+    def render(self, pdf: Path, destination: Path, info: PDFInfo) -> list[RenderedPage]:
+        paths = _render_pages(pdf, destination, info.page_count)
+        pages: list[RenderedPage] = []
+        for number, path in enumerate(paths, 1):
+            with Image.open(path) as image:
+                width, height = image.size
+            pages.append(RenderedPage(number, path, width, height, 300))
+        return pages
+
+
+class _PopplerNativeTextExtractor:
+    def extract(self, pdf: Path, info: PDFInfo) -> TextExtractionResult:
+        pages = _extract_native(pdf, info.sizes)
+        return TextExtractionResult(
+            engine=EngineInfo("poppler-pdftohtml", _poppler_version()),
+            pages=pages,
+            page_statuses=["completed" if page else "no-text" for page in pages],
+        )
+
+
+class _AppleVisionOCR:
+    def recognize(self, pages: Sequence[RenderedPage]) -> TextExtractionResult:
+        extracted = _extract_vision([page.image_path for page in pages])
+        return TextExtractionResult(
+            engine=EngineInfo("apple-vision", _vision_version()),
+            pages=extracted,
+            page_statuses=["completed" if page else "no-text" for page in extracted],
+        )
+
+
+class _HeuristicSemanticParser:
+    def parse(self, pdf: Path, pages: list[PageData]) -> StructureResult:
+        return _group_blocks(pages)
+
+
+def default_conversion_tools() -> ConversionTools:
+    """Return the statically configured tool implementations used by the CLI."""
+
+    return ConversionTools(
+        inspector=_PopplerInspector(),
+        renderer=_PopplerRenderer(),
+        native_text=_PopplerNativeTextExtractor(),
+        ocr=_AppleVisionOCR(),
+        semantic_parser=_HeuristicSemanticParser(),
+    )
 
 
 def _json_dump(path: Path, value: Any) -> None:
@@ -1989,30 +2012,64 @@ def _validate_output_path(pdf: Path, output: Path) -> Path:
     return resolved
 
 
-def convert_pdf(pdf: Path, output: Path, options: ConversionOptions | None = None) -> dict[str, Any]:
+def convert_pdf(
+    pdf: Path,
+    output: Path,
+    options: ConversionOptions | None = None,
+    *,
+    tools: ConversionTools | None = None,
+) -> dict[str, Any]:
     options = options or ConversionOptions()
+    tools = tools or default_conversion_tools()
     input_path = pdf.resolve()
     safe_output = _validate_output_path(input_path, output)
     resolved = _resolve_pdf_input(input_path, options)
     pdf = resolved.path
     root, publish = _atomic_destination(safe_output, options.replace)
     try:
-        page_count, sizes, rotations = _pdf_metadata(pdf)
         image_dir = root / "assets/evidence/pages/src-001"
-        images = _render_pages(pdf, image_dir, page_count)
-        native_pages = _extract_native(pdf, sizes)
-        ocr_pages = _extract_vision(images)
+        try:
+            info = validate_pdf_info(tools.inspector.inspect(pdf))
+            rendered_pages = validate_rendered_pages(
+                tools.renderer.render(pdf, image_dir, info), info, image_dir
+            )
+            native_result = validate_text_extraction(
+                tools.native_text.extract(pdf, info), info, role="native text extractor"
+            )
+            ocr_result = validate_text_extraction(
+                tools.ocr.recognize(rendered_pages), info, role="OCR engine"
+            )
+        except ToolContractError as exc:
+            raise ConversionError(f"tool contract violation: {exc}") from exc
         pages: list[PageData] = []
-        for number, (size, rotation, image_path, native, ocr) in enumerate(
-            zip(sizes, rotations, images, native_pages, ocr_pages, strict=True), 1
+        for number, (size, rotation, rendered, native, ocr) in enumerate(
+            zip(
+                info.sizes,
+                info.rotations,
+                rendered_pages,
+                native_result.pages,
+                ocr_result.pages,
+                strict=True,
+            ),
+            1,
         ):
-            with Image.open(image_path) as image:
-                pixels = image.size
             width_pt, height_pt = size
             if rotation in {90, 270}:
                 width_pt, height_pt = height_pt, width_pt
-            pages.append(PageData(number, width_pt, height_pt, rotation, image_path, *pixels, native, ocr))
-        structure = _group_blocks(pages)
+            pages.append(
+                PageData(
+                    number,
+                    width_pt,
+                    height_pt,
+                    rotation,
+                    rendered.image_path,
+                    rendered.width_px,
+                    rendered.height_px,
+                    native,
+                    ocr,
+                )
+            )
+        structure = tools.semantic_parser.parse(pdf, pages)
         joined_native = " ".join(box.text for page in pages for box in page.native)
         arxiv_match = re.search(r"(?:arXiv:)?(\d{4}\.\d{4,5}v\d+)", joined_native, re.IGNORECASE)
         if arxiv_match:
@@ -2057,14 +2114,17 @@ def convert_pdf(pdf: Path, output: Path, options: ConversionOptions | None = Non
                     "image_width_px": page.image_width,
                     "image_height_px": page.image_height,
                     "render_dpi": 300,
-                    "ocr_status": "completed" if page.ocr else "no-text",
+                    "ocr_status": ocr_result.page_statuses[page.number - 1],
                 }
             )
         created_at = options.created_at or datetime.now(UTC).isoformat(timespec="seconds").replace(
             "+00:00", "Z"
         )
         _jsonl_dump(root / "provenance/pages.jsonl", page_records)
-        _jsonl_dump(root / "provenance/elements.jsonl", _records(addressable, pages, created_at))
+        _jsonl_dump(
+            root / "provenance/elements.jsonl",
+            _records(addressable, pages, created_at, native_result.engine, ocr_result.engine),
+        )
         _jsonl_dump(root / "provenance/omissions.jsonl", structure.omissions)
         source_sha = _sha256(pdf)
         manifest = {
@@ -2089,7 +2149,7 @@ def convert_pdf(pdf: Path, output: Path, options: ConversionOptions | None = Non
                     "media_type": "application/pdf",
                     "sha256": source_sha,
                     "size": pdf.stat().st_size,
-                    "page_count": page_count,
+                    "page_count": info.page_count,
                     "source_class": "born-digital",
                     "extraction_modes": ["native-pdf", "ocr"],
                     "embedded_path": None,
