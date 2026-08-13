@@ -1,23 +1,33 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
+import http.client
 import importlib
+import ipaddress
 import json
 import os
+import queue
 import re
 import shutil
+import socket
+import ssl
 import statistics
 import subprocess
 import tempfile
+import threading
+import time
 import unicodedata
+import urllib.parse
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+import certifi
 from lxml import etree
 from PIL import Image
 
@@ -27,6 +37,14 @@ REPORT_SCHEMA = "https://hwaipy.github.io/Paper2HTML/schema/0.1/validation-repor
 XLINK = "http://www.w3.org/1999/xlink"
 ARXIV_ISSN = "2331-8422"
 ARXIV_ISSN_REGISTRY = "https://portal.issn.org/resource/ISSN-L/2331-8422"
+SOURCE_DESCRIPTOR_FORMAT = "paper2html-pdf-source"
+SOURCE_DESCRIPTOR_VERSION = "1"
+MAX_REMOTE_PDF_BYTES = 100 * 1024 * 1024
+MAX_REMOTE_REDIRECTS = 5
+REMOTE_TIMEOUT_SECONDS = 30
+REMOTE_TOTAL_TIMEOUT_SECONDS = 120
+DOH_HOST = "cloudflare-dns.com"
+DOH_ADDRESS = "1.1.1.1"
 
 
 class ConversionError(RuntimeError):
@@ -39,6 +57,16 @@ class ConversionOptions:
     replace: bool = False
     allow_network: bool = False
     cache_dir: Path | None = None
+    download_cache_dir: Path | None = None
+    secure_dns: bool = False
+
+
+@dataclass(frozen=True)
+class ResolvedPDF:
+    path: Path
+    original_name: str
+    source_url: str | None = None
+    final_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -643,6 +671,390 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _validate_remote_url(value: str) -> None:
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ConversionError("remote PDF URL must be absolute HTTP or HTTPS")
+    if parsed.username is not None or parsed.password is not None:
+        raise ConversionError("remote PDF URL must not contain credentials")
+    hostname = parsed.hostname.casefold()
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise ConversionError("remote PDF URL must not use localhost")
+    try:
+        literal = ipaddress.ip_address(hostname)
+    except ValueError:
+        return
+    if not _is_allowed_remote_address(literal):
+        raise ConversionError(f"remote PDF URL must not use a non-global IP address: {literal}")
+
+
+def _remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ConversionError("remote PDF exceeded the overall download deadline")
+    return min(REMOTE_TIMEOUT_SECONDS, remaining)
+
+
+def _global_ip(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as exc:
+        raise ConversionError(f"remote PDF resolved to an invalid IP address: {value}") from exc
+    if not _is_allowed_remote_address(address):
+        raise ConversionError(f"remote PDF must not resolve to a non-global IP address: {address}")
+    return address
+
+
+def _is_allowed_remote_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return bool(
+        address.is_global
+        and not address.is_private
+        and not address.is_loopback
+        and not address.is_link_local
+        and not address.is_multicast
+        and not address.is_unspecified
+        and not address.is_reserved
+    )
+
+
+def _resolve_global_addresses(host: str, port: int, deadline: float) -> list[str]:
+    result: queue.Queue[object] = queue.Queue(maxsize=1)
+
+    def resolve() -> None:
+        try:
+            result.put(socket.getaddrinfo(host, port, type=socket.SOCK_STREAM))
+        except BaseException as exc:
+            result.put(exc)
+
+    threading.Thread(target=resolve, daemon=True).start()
+    try:
+        resolved = result.get(timeout=_remaining(deadline))
+    except queue.Empty as exc:
+        raise ConversionError("remote PDF DNS resolution exceeded the overall deadline") from exc
+    if isinstance(resolved, BaseException):
+        raise ConversionError(f"cannot resolve remote PDF host: {resolved}") from resolved
+    addresses: list[str] = []
+    for item in cast(list[Any], resolved):
+        candidate = item[4][0]
+        address = _global_ip(candidate)
+        normalized = str(address)
+        if normalized not in addresses:
+            addresses.append(normalized)
+    if not addresses:
+        raise ConversionError("remote PDF host resolved to no addresses")
+    return addresses
+
+
+def _resolve_secure_dns(host: str, deadline: float) -> list[str]:
+    addresses: list[str] = []
+    for record_type in ("A", "AAAA"):
+        raw: socket.socket | None = None
+        connection: http.client.HTTPConnection | None = None
+        try:
+            raw = socket.create_connection((DOH_ADDRESS, 443), timeout=_remaining(deadline))
+            peer = _global_ip(raw.getpeername()[0])
+            if peer != ipaddress.ip_address(DOH_ADDRESS):
+                raise ConversionError("secure DNS peer differs from its pinned global address")
+            context = ssl.create_default_context(cafile=certifi.where())
+            raw = context.wrap_socket(raw, server_hostname=DOH_HOST)
+            raw.settimeout(_remaining(deadline))
+            connection = http.client.HTTPConnection(DOH_HOST, 443, timeout=_remaining(deadline))
+            connection.sock = raw
+            query = urllib.parse.urlencode({"name": host, "type": record_type})
+            connection.request(
+                "GET",
+                f"/dns-query?{query}",
+                headers={
+                    "Host": DOH_HOST,
+                    "Accept": "application/dns-json",
+                    "User-Agent": "Paper2HTML/0.1",
+                    "Connection": "close",
+                },
+            )
+            response = connection.getresponse()
+            if response.status != 200:
+                raise ConversionError(f"secure DNS returned HTTP {response.status}")
+            payload = response.read(65537)
+            _remaining(deadline)
+            if len(payload) > 65536:
+                raise ConversionError("secure DNS response exceeded the safety limit")
+            value = json.loads(payload)
+            if value.get("Status") != 0:
+                raise ConversionError(f"secure DNS returned status {value.get('Status')}")
+            expected_type = 1 if record_type == "A" else 28
+            for answer in value.get("Answer", []):
+                if answer.get("type") != expected_type:
+                    continue
+                normalized = str(_global_ip(str(answer.get("data", ""))))
+                if normalized not in addresses:
+                    addresses.append(normalized)
+        except (OSError, ValueError, json.JSONDecodeError, http.client.HTTPException) as exc:
+            raise ConversionError(f"secure DNS resolution failed: {exc}") from exc
+        finally:
+            if connection is not None:
+                connection.close()
+            elif raw is not None:
+                raw.close()
+    if not addresses:
+        raise ConversionError("secure DNS returned no A or AAAA addresses")
+    return addresses
+
+
+def _host_header(parsed: urllib.parse.SplitResult, port: int) -> str:
+    host = parsed.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    default = 443 if parsed.scheme == "https" else 80
+    return host if port == default else f"{host}:{port}"
+
+
+def _open_remote_response(
+    url: str, deadline: float, secure_dns: bool = False
+) -> tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
+    _validate_remote_url(url)
+    parsed = urllib.parse.urlsplit(url)
+    host = parsed.hostname or ""
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError as exc:
+        raise ConversionError(f"remote PDF URL has an invalid port: {exc}") from exc
+    addresses = (
+        _resolve_secure_dns(host, deadline) if secure_dns else _resolve_global_addresses(host, port, deadline)
+    )
+    selected = addresses[0]
+    raw: socket.socket | None = None
+    connection: http.client.HTTPConnection | None = None
+    try:
+        raw = socket.create_connection((selected, port), timeout=_remaining(deadline))
+        peer = _global_ip(raw.getpeername()[0])
+        if peer != ipaddress.ip_address(selected):
+            raise ConversionError("remote PDF connection peer differs from the validated DNS address")
+        raw.settimeout(_remaining(deadline))
+        if parsed.scheme == "https":
+            context = ssl.create_default_context(cafile=certifi.where())
+            raw = context.wrap_socket(raw, server_hostname=host)
+            raw.settimeout(_remaining(deadline))
+        connection = http.client.HTTPConnection(host, port, timeout=_remaining(deadline))
+        connection.sock = raw
+        target = parsed.path or "/"
+        if parsed.query:
+            target += f"?{parsed.query}"
+        connection.request(
+            "GET",
+            target,
+            headers={
+                "Host": _host_header(parsed, port),
+                "Accept": "application/pdf",
+                "User-Agent": "Paper2HTML/0.1",
+                "Connection": "close",
+            },
+        )
+        response = connection.getresponse()
+        return connection, response
+    except Exception:
+        if connection is not None:
+            connection.close()
+        elif raw is not None:
+            raw.close()
+        raise
+
+
+def _descriptor(path: Path) -> dict[str, Any]:
+    try:
+        raw = path.read_bytes()
+        if raw.startswith(b"\xef\xbb\xbf") or b"\r" in raw:
+            raise ConversionError("source descriptor must be UTF-8 without BOM and use LF line endings")
+        value = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ConversionError(f"cannot read source descriptor: {exc}") from exc
+    required = {"format", "format_version", "case_id", "url", "sha256", "size", "original_name"}
+    if not isinstance(value, dict) or set(value) != required:
+        raise ConversionError(f"source descriptor fields must be exactly: {', '.join(sorted(required))}")
+    if (
+        value.get("format") != SOURCE_DESCRIPTOR_FORMAT
+        or value.get("format_version") != SOURCE_DESCRIPTOR_VERSION
+    ):
+        raise ConversionError("unsupported source descriptor format or version")
+    url = value.get("url")
+    case_id = value.get("case_id")
+    digest = value.get("sha256")
+    size = value.get("size")
+    original_name = value.get("original_name")
+    if not isinstance(url, str):
+        raise ConversionError("source descriptor url must be a string")
+    if not isinstance(case_id, str) or re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", case_id) is None:
+        raise ConversionError("source descriptor case_id must be a lowercase hyphenated identifier")
+    _validate_remote_url(url)
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ConversionError("source descriptor sha256 must be 64 lowercase hexadecimal characters")
+    if not isinstance(size, int) or isinstance(size, bool) or not 1 <= size <= MAX_REMOTE_PDF_BYTES:
+        raise ConversionError(f"source descriptor size must be between 1 and {MAX_REMOTE_PDF_BYTES}")
+    if (
+        not isinstance(original_name, str)
+        or not original_name.lower().endswith(".pdf")
+        or Path(original_name).name != original_name
+        or not original_name.strip()
+    ):
+        raise ConversionError("source descriptor original_name must be a plain PDF filename")
+    return value
+
+
+def _default_download_cache_dir() -> Path:
+    cache_root = os.environ.get("XDG_CACHE_HOME")
+    base = Path(cache_root) if cache_root else Path.home() / ".cache"
+    return base / "paper2html" / "sources"
+
+
+def _verified_cached_pdf(path: Path, digest: str, size: int) -> bool:
+    try:
+        if not path.is_file() or path.is_symlink() or path.stat().st_size != size:
+            return False
+        with path.open("rb") as stream:
+            magic = stream.read(5)
+        return magic == b"%PDF-" and _sha256(path) == digest
+    except FileNotFoundError:
+        return False
+
+
+def _lock_cache(lock_path: Path, deadline: float) -> Any:
+    lock = lock_path.open("a+b")
+    while True:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return lock
+        except BlockingIOError:
+            try:
+                time.sleep(min(0.05, _remaining(deadline)))
+            except Exception:
+                lock.close()
+                raise
+
+
+def _download_pdf(
+    descriptor: dict[str, Any], cache_dir: Path, allow_network: bool, secure_dns: bool = False
+) -> tuple[Path, str]:
+    digest = descriptor["sha256"]
+    expected_size = descriptor["size"]
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    target = cache_dir / f"{digest}.pdf"
+    metadata = cache_dir / f"{digest}.origin.json"
+    deadline = time.monotonic() + REMOTE_TOTAL_TIMEOUT_SECONDS
+    lock = _lock_cache(cache_dir / f"{digest}.lock", deadline)
+    temporary: Path | None = None
+    try:
+        if _verified_cached_pdf(target, digest, expected_size):
+            final_url = descriptor["url"]
+            if metadata.is_file() and not metadata.is_symlink():
+                try:
+                    cached_origin = json.loads(metadata.read_text(encoding="utf-8"))
+                    if cached_origin.get("url") == descriptor["url"]:
+                        candidate = cached_origin.get("final_url")
+                        if isinstance(candidate, str):
+                            _validate_remote_url(candidate)
+                            final_url = candidate
+                except (OSError, ValueError, json.JSONDecodeError):
+                    pass
+            return target, final_url
+        target.unlink(missing_ok=True)
+        if not allow_network:
+            raise ConversionError("remote PDF is not in the verified cache; use --allow-network")
+        url = descriptor["url"]
+        redirects = 0
+        connection: http.client.HTTPConnection | None = None
+        response: http.client.HTTPResponse | None = None
+        while True:
+            connection, response = _open_remote_response(url, deadline, secure_dns)
+            if response.status not in {301, 302, 303, 307, 308}:
+                break
+            location = response.getheader("Location")
+            connection.close()
+            if not location:
+                raise ConversionError("remote PDF redirect has no Location header")
+            redirects += 1
+            if redirects > MAX_REMOTE_REDIRECTS:
+                raise ConversionError(f"remote PDF exceeded {MAX_REMOTE_REDIRECTS} redirects")
+            url = urllib.parse.urljoin(url, location)
+            _validate_remote_url(url)
+        if response is None or connection is None:
+            raise ConversionError("remote PDF request produced no response")
+        if response.status != 200:
+            connection.close()
+            raise ConversionError(f"remote PDF returned HTTP {response.status}")
+        try:
+            length = response.getheader("Content-Length")
+            if length is not None and int(length) > min(expected_size, MAX_REMOTE_PDF_BYTES):
+                raise ConversionError("remote PDF Content-Length exceeds the descriptor or safety limit")
+            with tempfile.NamedTemporaryFile(
+                "wb", dir=cache_dir, prefix=".download-", delete=False
+            ) as stream:
+                temporary = Path(stream.name)
+                total = 0
+                first = b""
+                while True:
+                    _remaining(deadline)
+                    if connection.sock is not None:
+                        connection.sock.settimeout(_remaining(deadline))
+                    chunk = response.read(min(1024 * 1024, expected_size - total + 1))
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > expected_size or total > MAX_REMOTE_PDF_BYTES:
+                        raise ConversionError("remote PDF exceeds the descriptor or safety size limit")
+                    if not first:
+                        first = chunk[:5]
+                    stream.write(chunk)
+        finally:
+            connection.close()
+        if total != expected_size:
+            raise ConversionError(f"remote PDF size mismatch: expected {expected_size}, got {total}")
+        if first != b"%PDF-":
+            raise ConversionError("remote response is not a PDF")
+        actual = _sha256(temporary)
+        if actual != digest:
+            raise ConversionError(f"remote PDF SHA-256 mismatch: expected {digest}, got {actual}")
+        os.replace(temporary, target)
+        temporary = None
+        final_url = url
+        metadata_payload = (
+            json.dumps(
+                {"url": descriptor["url"], "final_url": final_url},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", newline="\n", dir=cache_dir, prefix=".origin-", delete=False
+        ) as metadata_stream:
+            metadata_stream.write(metadata_payload)
+            metadata_temporary = Path(metadata_stream.name)
+        os.replace(metadata_temporary, metadata)
+        return target, final_url
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        raise ConversionError(f"cannot download remote PDF: {exc}") from exc
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        lock.close()
+
+
+def _resolve_pdf_input(input_path: Path, options: ConversionOptions) -> ResolvedPDF:
+    path = input_path.resolve()
+    if not path.is_file():
+        raise ConversionError(f"input does not exist: {path}")
+    if path.suffix.lower() == ".pdf":
+        with path.open("rb") as stream:
+            magic = stream.read(5)
+        if magic != b"%PDF-":
+            raise ConversionError("local PDF does not begin with the PDF magic header")
+        return ResolvedPDF(path, path.name)
+    descriptor = _descriptor(path)
+    cache_dir = (options.download_cache_dir or _default_download_cache_dir()).resolve()
+    downloaded, final_url = _download_pdf(descriptor, cache_dir, options.allow_network, options.secure_dns)
+    return ResolvedPDF(downloaded, descriptor["original_name"], descriptor["url"], final_url)
+
+
 def _write_checksums(root: Path) -> None:
     files = sorted(
         (path for path in root.rglob("*") if path.is_file() and path.name != "checksums.sha256"),
@@ -717,18 +1129,16 @@ def _validate_output_path(pdf: Path, output: Path) -> Path:
             break
     resolved = raw.resolve(strict=False)
     if resolved == pdf or resolved in pdf.parents:
-        raise ConversionError("output must not equal or contain the input PDF path")
+        raise ConversionError("output must not equal or contain the input path")
     return resolved
 
 
 def convert_pdf(pdf: Path, output: Path, options: ConversionOptions | None = None) -> dict[str, Any]:
     options = options or ConversionOptions()
-    pdf = pdf.resolve()
-    if not pdf.is_file():
-        raise ConversionError(f"input PDF does not exist: {pdf}")
-    if pdf.suffix.lower() != ".pdf":
-        raise ConversionError("the minimal converter accepts PDF input only")
-    safe_output = _validate_output_path(pdf, output)
+    input_path = pdf.resolve()
+    safe_output = _validate_output_path(input_path, output)
+    resolved = _resolve_pdf_input(input_path, options)
+    pdf = resolved.path
     root, publish = _atomic_destination(safe_output, options.replace)
     try:
         page_count, sizes, rotations = _pdf_metadata(pdf)
@@ -818,7 +1228,7 @@ def convert_pdf(pdf: Path, output: Path, options: ConversionOptions | None = Non
                 {
                     "id": "src-001",
                     "role": "primary",
-                    "original_name": pdf.name,
+                    "original_name": resolved.original_name,
                     "media_type": "application/pdf",
                     "sha256": source_sha,
                     "size": pdf.stat().st_size,
@@ -826,6 +1236,18 @@ def convert_pdf(pdf: Path, output: Path, options: ConversionOptions | None = Non
                     "source_class": "born-digital",
                     "extraction_modes": ["native-pdf", "ocr"],
                     "embedded_path": None,
+                    **(
+                        {
+                            "x-origin": {
+                                "kind": "remote-url",
+                                "url": resolved.source_url,
+                                "final_url": resolved.final_url,
+                                "sha256": source_sha,
+                            }
+                        }
+                        if resolved.source_url is not None
+                        else {}
+                    ),
                 }
             ],
             "provenance": {

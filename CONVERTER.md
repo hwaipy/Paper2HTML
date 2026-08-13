@@ -31,13 +31,36 @@ from the validator cache.
 uv run python -m src.converter.cli INPUT.pdf OUTPUT_DIRECTORY --allow-network
 ```
 
+`INPUT` can also be a UTF-8 JSON source descriptor. This lets a repository pin
+a redistributable URL and its exact bytes without committing the PDF:
+
+```json
+{
+  "format": "paper2html-pdf-source",
+  "format_version": "1",
+  "case_id": "arxiv-2503-17744v1",
+  "url": "https://arxiv.org/pdf/2503.17744v1",
+  "sha256": "10cb935f09510e179ed2e6aa5e593c853c68d48ad5316f8b0ed0e70a88f9eaa2",
+  "size": 754271,
+  "original_name": "2503.17744v1.pdf"
+}
+```
+
+All seven fields are required and no additional fields are accepted. The URL
+must be absolute HTTP(S); a permanent arXiv test must include an explicit
+version such as `v1`, never a latest-version URL. The converter limits redirects,
+socket timeout, and total response size, checks `%PDF-`, byte count, and SHA-256,
+then atomically publishes the verified PDF to a content-addressed cache. It
+records the requested URL, final URL, and content hash in the manifest source's
+`x-origin`. A cache hit works offline; a miss requires `--allow-network`.
+
 The persistent first case can be rerun locally with:
 
 ```sh
 uv run python -m src.converter.cli \
-  testdata/cases/papers/arxiv-2503-17744v1/input/2503.17744v1.pdf \
+  tests/golden/arxiv-2503-17744v1/source.json \
   testdata/runs/arxiv-2503-17744v1-minimal-pipeline \
-  --replace
+  --allow-network --replace
 ```
 
 Useful options:
@@ -47,6 +70,10 @@ Useful options:
 - `--created-at 2026-08-12T00:00:00Z` fixes the manifest completion timestamp
   for reproducibility tests.
 - `--cache-dir PATH` selects the validator's verified resource cache.
+- `--download-cache-dir PATH` selects the verified remote-PDF cache.
+- `--secure-dns` uses DNS-over-HTTPS through a pinned global resolver address;
+  use it when a local proxy exposes reserved synthetic DNS addresses. Every
+  returned A/AAAA address is still required to be globally routable.
 - `--json` prints the generated validation result.
 
 ## What the pipeline actually does

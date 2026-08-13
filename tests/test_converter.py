@@ -3,6 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -10,7 +13,9 @@ from typing import Any
 import pytest
 from PIL import Image
 
+from converter import golden as golden_module
 from converter import pipeline
+from converter.golden import GoldenError, build_projection, compare_projection, update_golden
 from converter.pipeline import ConversionError, ConversionOptions, TextBox
 
 
@@ -79,6 +84,55 @@ def _fake_engines(monkeypatch: Any) -> None:
         write_report=write_report,
     )
     monkeypatch.setattr(pipeline.importlib, "import_module", lambda _: fake_validator)
+
+
+def _write_descriptor(path: Path, source: bytes) -> dict[str, Any]:
+    value = {
+        "format": "paper2html-pdf-source",
+        "format_version": "1",
+        "case_id": "paper-v1",
+        "url": "https://example.test/papers/paper-v1.pdf",
+        "sha256": hashlib.sha256(source).hexdigest(),
+        "size": len(source),
+        "original_name": "paper-v1.pdf",
+    }
+    path.write_text(json.dumps(value) + "\n", encoding="utf-8")
+    return value
+
+
+class _RemoteResponse:
+    def __init__(
+        self,
+        payload: bytes = b"",
+        *,
+        status: int = 200,
+        location: str | None = None,
+        read_delay: float = 0.0,
+    ) -> None:
+        self.payload = payload
+        self.status = status
+        self.location = location
+        self.read_delay = read_delay
+
+    def getheader(self, name: str) -> str | None:
+        if name == "Location":
+            return self.location
+        if name == "Content-Length" and self.status == 200:
+            return str(len(self.payload))
+        return None
+
+    def read(self, _: int) -> bytes:
+        if self.read_delay:
+            time.sleep(self.read_delay)
+        result, self.payload = self.payload, b""
+        return result
+
+
+class _RemoteConnection:
+    sock = None
+
+    def close(self) -> None:
+        pass
 
 
 def test_conversion_builds_stable_package_skeleton(tmp_path: Path, monkeypatch: Any) -> None:
@@ -150,7 +204,7 @@ def test_unsourced_generic_metadata_does_not_claim_title_bbox(tmp_path: Path, mo
         lambda *_: [[TextBox(1, box.text, box.bbox, confidence=0.9) for box in boxes]],
     )
     source = tmp_path / "filename-is-not-metadata.pdf"
-    source.write_bytes(b"%PDF")
+    source.write_bytes(b"%PDF-1.4\n")
     output = tmp_path / "result"
     pipeline.convert_pdf(
         source,
@@ -167,7 +221,7 @@ def test_unsourced_generic_metadata_does_not_claim_title_bbox(tmp_path: Path, mo
 
 def test_existing_output_is_not_touched_without_replace(tmp_path: Path) -> None:
     source = tmp_path / "paper.pdf"
-    source.write_bytes(b"%PDF")
+    source.write_bytes(b"%PDF-1.4\n")
     output = tmp_path / "result"
     output.mkdir()
     marker = output / "mine.txt"
@@ -184,7 +238,7 @@ def test_existing_output_is_not_touched_without_replace(tmp_path: Path) -> None:
 def test_replace_succeeds_atomically(tmp_path: Path, monkeypatch: Any) -> None:
     _fake_engines(monkeypatch)
     source = tmp_path / "paper.pdf"
-    source.write_bytes(b"%PDF")
+    source.write_bytes(b"%PDF-1.4\n")
     output = tmp_path / "result"
     output.mkdir()
     (output / "old.txt").write_text("old")
@@ -200,7 +254,7 @@ def test_replace_succeeds_atomically(tmp_path: Path, monkeypatch: Any) -> None:
 def test_replace_rolls_back_when_publish_fails(tmp_path: Path, monkeypatch: Any) -> None:
     _fake_engines(monkeypatch)
     source = tmp_path / "paper.pdf"
-    source.write_bytes(b"%PDF")
+    source.write_bytes(b"%PDF-1.4\n")
     output = tmp_path / "result"
     output.mkdir()
     marker = output / "old.txt"
@@ -230,16 +284,16 @@ def test_output_cannot_equal_or_contain_input(tmp_path: Path, kind: str) -> None
     case = tmp_path / "case"
     case.mkdir()
     source = case / "paper.pdf"
-    source.write_bytes(b"%PDF")
+    source.write_bytes(b"%PDF-1.4\n")
     output = source if kind == "same" else case
-    with pytest.raises(ConversionError, match="input PDF"):
+    with pytest.raises(ConversionError, match="input path"):
         pipeline.convert_pdf(source, output, ConversionOptions(replace=True))
-    assert source.read_bytes() == b"%PDF"
+    assert source.read_bytes() == b"%PDF-1.4\n"
 
 
 def test_output_symlink_and_symlinked_parent_are_rejected(tmp_path: Path) -> None:
     source = tmp_path / "paper.pdf"
-    source.write_bytes(b"%PDF")
+    source.write_bytes(b"%PDF-1.4\n")
     target = tmp_path / "target"
     target.mkdir()
     marker = target / "keep.txt"
@@ -253,6 +307,338 @@ def test_output_symlink_and_symlinked_parent_are_rejected(tmp_path: Path) -> Non
     with pytest.raises(ConversionError, match="symbolic links"):
         pipeline.convert_pdf(source, parent_link / "new-output")
     assert marker.read_text() == "keep"
+
+
+def test_url_descriptor_uses_verified_cache_and_records_origin(tmp_path: Path, monkeypatch: Any) -> None:
+    _fake_engines(monkeypatch)
+    pdf_bytes = b"%PDF-1.4\nremote-fixture\n"
+    descriptor = tmp_path / "source.json"
+    value = _write_descriptor(descriptor, pdf_bytes)
+    download_cache = tmp_path / "downloads"
+    download_cache.mkdir()
+    (download_cache / f"{value['sha256']}.pdf").write_bytes(pdf_bytes)
+    output = tmp_path / "result"
+    pipeline.convert_pdf(
+        descriptor,
+        output,
+        ConversionOptions(
+            created_at="2026-08-12T00:00:00Z",
+            download_cache_dir=download_cache,
+        ),
+    )
+    source = json.loads((output / "manifest.json").read_text())["sources"][0]
+    assert source["original_name"] == "paper-v1.pdf"
+    assert source["sha256"] == value["sha256"]
+    assert source["x-origin"] == {
+        "kind": "remote-url",
+        "url": value["url"],
+        "final_url": value["url"],
+        "sha256": value["sha256"],
+    }
+
+
+def test_url_descriptor_requires_network_on_cache_miss(tmp_path: Path) -> None:
+    descriptor = tmp_path / "source.json"
+    _write_descriptor(descriptor, b"%PDF-1.4\nmissing\n")
+    output = tmp_path / "result"
+    with pytest.raises(ConversionError, match="--allow-network"):
+        pipeline.convert_pdf(
+            descriptor,
+            output,
+            ConversionOptions(download_cache_dir=tmp_path / "downloads"),
+        )
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("payload", [b"not-pdf!!", b"%PDF-wrong"])
+def test_failed_remote_verification_leaves_no_cache_or_output(
+    tmp_path: Path, monkeypatch: Any, payload: bytes
+) -> None:
+    expected = b"%PDF-right"
+    descriptor_path = tmp_path / "source.json"
+    descriptor = _write_descriptor(descriptor_path, expected)
+    cache = tmp_path / "downloads"
+
+    monkeypatch.setattr(
+        pipeline,
+        "_open_remote_response",
+        lambda *_: (_RemoteConnection(), _RemoteResponse(payload)),
+    )
+    with pytest.raises(ConversionError, match="not a PDF|SHA-256 mismatch|size mismatch"):
+        pipeline.convert_pdf(
+            descriptor_path,
+            tmp_path / "result",
+            ConversionOptions(allow_network=True, download_cache_dir=cache),
+        )
+    assert not (tmp_path / "result").exists()
+    assert not (cache / f"{descriptor['sha256']}.pdf").exists()
+    assert not list(cache.glob(".download-*"))
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost/paper.pdf",
+        "http://sub.localhost/paper.pdf",
+        "http://127.0.0.1/paper.pdf",
+        "http://10.0.0.1/paper.pdf",
+        "http://169.254.1.1/paper.pdf",
+        "http://[::1]/paper.pdf",
+        "http://[fc00::1]/paper.pdf",
+        "http://[ff02::1]/paper.pdf",
+        "http://0.0.0.0/paper.pdf",
+        "http://192.0.2.1/paper.pdf",
+    ],
+)
+def test_remote_url_rejects_local_or_non_global_literal(url: str) -> None:
+    with pytest.raises(ConversionError, match="localhost|non-global"):
+        pipeline._validate_remote_url(url)
+
+
+def test_dns_rejects_host_if_any_candidate_is_private(monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        pipeline.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.8", 443)),
+        ],
+    )
+    with pytest.raises(ConversionError, match="non-global"):
+        pipeline._resolve_global_addresses("example.test", 443, time.monotonic() + 1)
+
+
+def test_connection_rejects_rebound_private_peer(monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        pipeline,
+        "_resolve_global_addresses",
+        lambda *_: ["93.184.216.34"],
+    )
+
+    class ReboundSocket:
+        def getpeername(self) -> tuple[str, int]:
+            return "127.0.0.1", 80
+
+        def settimeout(self, _: float) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(pipeline.socket, "create_connection", lambda *_args, **_kwargs: ReboundSocket())
+    with pytest.raises(ConversionError, match="non-global"):
+        pipeline._open_remote_response("http://example.test/paper.pdf", time.monotonic() + 1)
+
+
+def test_redirect_to_private_address_is_rejected(tmp_path: Path, monkeypatch: Any) -> None:
+    source = b"%PDF-right"
+    descriptor_path = tmp_path / "source.json"
+    descriptor = _write_descriptor(descriptor_path, source)
+    calls = 0
+
+    def redirect(*_: object) -> tuple[Any, Any]:
+        nonlocal calls
+        calls += 1
+        return _RemoteConnection(), _RemoteResponse(status=302, location="http://127.0.0.1/private")
+
+    monkeypatch.setattr(pipeline, "_open_remote_response", redirect)
+    with pytest.raises(ConversionError, match="non-global"):
+        pipeline._download_pdf(descriptor, tmp_path / "cache", True)
+    assert calls == 1
+
+
+def test_redirect_limit_is_enforced(tmp_path: Path, monkeypatch: Any) -> None:
+    descriptor_path = tmp_path / "source.json"
+    descriptor = _write_descriptor(descriptor_path, b"%PDF-right")
+    calls = 0
+
+    def redirect(*_: object) -> tuple[Any, Any]:
+        nonlocal calls
+        calls += 1
+        return _RemoteConnection(), _RemoteResponse(
+            status=302, location=f"https://example.test/redirect-{calls}"
+        )
+
+    monkeypatch.setattr(pipeline, "_open_remote_response", redirect)
+    with pytest.raises(ConversionError, match="exceeded 5 redirects"):
+        pipeline._download_pdf(descriptor, tmp_path / "cache", True)
+    assert calls == pipeline.MAX_REMOTE_REDIRECTS + 1
+
+
+def test_overall_deadline_applies_during_streaming(tmp_path: Path, monkeypatch: Any) -> None:
+    descriptor_path = tmp_path / "source.json"
+    descriptor = _write_descriptor(descriptor_path, b"%PDF-right")
+    monkeypatch.setattr(pipeline, "REMOTE_TOTAL_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(
+        pipeline,
+        "_open_remote_response",
+        lambda *_: (_RemoteConnection(), _RemoteResponse(b"%PDF", read_delay=0.02)),
+    )
+    with pytest.raises(ConversionError, match="overall download deadline"):
+        pipeline._download_pdf(descriptor, tmp_path / "cache", True)
+
+
+def test_dns_resolution_obeys_overall_deadline(monkeypatch: Any) -> None:
+    monkeypatch.setattr(pipeline, "REMOTE_TIMEOUT_SECONDS", 0.01)
+
+    def slow_dns(*_: object, **__: object) -> list[object]:
+        time.sleep(0.05)
+        return []
+
+    monkeypatch.setattr(pipeline.socket, "getaddrinfo", slow_dns)
+    with pytest.raises(ConversionError, match="DNS resolution"):
+        pipeline._resolve_global_addresses("example.test", 443, time.monotonic() + 0.01)
+
+
+def test_corrupt_cache_is_atomically_recovered_once_under_concurrency(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    payload = b"%PDF-right"
+    descriptor_path = tmp_path / "source.json"
+    descriptor = _write_descriptor(descriptor_path, payload)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    target = cache / f"{descriptor['sha256']}.pdf"
+    target.write_bytes(b"corrupt")
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def download(*_: object) -> tuple[Any, Any]:
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        time.sleep(0.02)
+        return _RemoteConnection(), _RemoteResponse(payload)
+
+    monkeypatch.setattr(pipeline, "_open_remote_response", download)
+    results: list[Path] = []
+
+    def worker() -> None:
+        results.append(pipeline._download_pdf(descriptor, cache, True)[0])
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert calls == 1
+    assert results == [target, target]
+    assert target.read_bytes() == payload
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda value: value.update(url="file:///tmp/paper.pdf"),
+        lambda value: value.update(url="https://user:secret@example.test/paper.pdf"),
+        lambda value: value.update(sha256="A" * 64),
+        lambda value: value.update(size=0),
+        lambda value: value.update(original_name="../paper.pdf"),
+        lambda value: value.update(extra=True),
+    ],
+)
+def test_url_descriptor_rejects_ambiguous_or_unsafe_values(tmp_path: Path, mutation: Any) -> None:
+    descriptor = tmp_path / "source.json"
+    value = _write_descriptor(descriptor, b"%PDF-1.4\n")
+    mutation(value)
+    descriptor.write_text(json.dumps(value) + "\n")
+    with pytest.raises(ConversionError):
+        pipeline.convert_pdf(descriptor, tmp_path / "result")
+
+
+def test_golden_projection_detects_structural_regression(tmp_path: Path, monkeypatch: Any) -> None:
+    _fake_engines(monkeypatch)
+    source = tmp_path / "paper.pdf"
+    source.write_bytes(b"%PDF-1.4\ngolden\n")
+    output = tmp_path / "result"
+    pipeline.convert_pdf(
+        source,
+        output,
+        ConversionOptions(created_at="2026-08-12T00:00:00Z"),
+    )
+    expected = build_projection(output)
+    assert compare_projection(expected, build_projection(output)) == []
+    document = output / "content/document.xml"
+    document.write_text(document.read_text().replace("Minimal Real Title", "Regressed Title"))
+    assert "document_sha256" in compare_projection(expected, build_projection(output))
+
+
+def test_golden_update_requires_exact_confirmation(tmp_path: Path) -> None:
+    with pytest.raises(GoldenError, match="--confirm-update"):
+        update_golden(tmp_path / "package", tmp_path / "golden", "case-001", "yes")
+    assert not (tmp_path / "golden").exists()
+
+
+def _golden_update_fixture(tmp_path: Path, monkeypatch: Any) -> tuple[Path, Path, dict[str, Any]]:
+    _fake_engines(monkeypatch)
+    payload = b"%PDF-1.4\ngolden-update\n"
+    golden = tmp_path / "paper-v1"
+    golden.mkdir()
+    descriptor = _write_descriptor(golden / "source.json", payload)
+    (golden / "README.md").write_text("keep\n")
+    (golden / "expected").mkdir()
+    (golden / "expected/old.txt").write_text("old\n")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / f"{descriptor['sha256']}.pdf").write_bytes(payload)
+    package = tmp_path / "package"
+    pipeline.convert_pdf(
+        golden / "source.json",
+        package,
+        ConversionOptions(
+            created_at="2026-08-12T00:00:00Z",
+            download_cache_dir=cache,
+        ),
+    )
+    return package, golden, descriptor
+
+
+def test_golden_update_rejects_wrong_target_and_package_identity(tmp_path: Path, monkeypatch: Any) -> None:
+    package, golden, _ = _golden_update_fixture(tmp_path, monkeypatch)
+    with pytest.raises(GoldenError, match="directory name"):
+        update_golden(package, golden, "different-case", "different-case")
+    manifest_path = package / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["sources"][0]["size"] += 1
+    manifest_path.write_text(json.dumps(manifest) + "\n")
+    with pytest.raises(GoldenError, match="source identity"):
+        update_golden(package, golden, "paper-v1", "paper-v1")
+    assert (golden / "expected/old.txt").read_text() == "old\n"
+
+
+def test_golden_update_copy_failure_preserves_old_tree(tmp_path: Path, monkeypatch: Any) -> None:
+    package, golden, _ = _golden_update_fixture(tmp_path, monkeypatch)
+    real_copyfile = golden_module.shutil.copyfile
+
+    def fail_package_copy(source: Any, target: Any, *args: Any, **kwargs: Any) -> Any:
+        if Path(source).resolve() == (package / "manifest.json").resolve():
+            raise OSError("simulated copy failure")
+        return real_copyfile(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(golden_module.shutil, "copyfile", fail_package_copy)
+    with pytest.raises(OSError, match="simulated copy failure"):
+        update_golden(package, golden, "paper-v1", "paper-v1")
+    assert (golden / "expected/old.txt").read_text() == "old\n"
+    assert (golden / "README.md").read_text() == "keep\n"
+
+
+def test_golden_update_publish_failure_rolls_back(tmp_path: Path, monkeypatch: Any) -> None:
+    package, golden, _ = _golden_update_fixture(tmp_path, monkeypatch)
+    real_replace = golden_module.os.replace
+    calls = 0
+
+    def fail_publish(source: Any, target: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated publish failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(golden_module.os, "replace", fail_publish)
+    with pytest.raises(OSError, match="simulated publish failure"):
+        update_golden(package, golden, "paper-v1", "paper-v1")
+    assert (golden / "expected/old.txt").read_text() == "old\n"
+    assert (golden / "README.md").read_text() == "keep\n"
 
 
 def test_reading_order_prefers_left_column_before_right() -> None:

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://hwaipy.github.io/Paper2HTML/schema/0.1/validation-report.schema.json",
+  "format": "paper2html-validation-report",
+  "format_version": "0.1",
+  "valid": false,
+  "validated_at": "2026-08-12T00:00:00Z",
+  "checks": {
+    "manifest_schema": "passed",
+    "xml_well_formed": "passed",
+    "jats_bits_schema": "passed",
+    "p2h_profile": "passed",
+    "id_uniqueness": "passed",
+    "cross_references": "passed",
+    "page_coverage": "partial",
+    "element_provenance": "passed",
+    "asset_integrity": "passed",
+    "checksum_integrity": "passed"
+  },
+  "statistics": {
+    "sources": 1,
+    "pages": 17,
+    "elements": 397,
+    "omissions": 0,
+    "errors": 1,
+    "warnings": 0
+  },
+  "errors": [
+    {
+      "code": "page_coverage_not_audited",
+      "message": "No independent page-object coverage evidence was supplied."
+    }
+  ],
+  "warnings": []
+}

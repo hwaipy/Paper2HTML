@@ -1,0 +1,190 @@
+{
+  "format": "paper2html-golden-projection",
+  "format_version": "1",
+  "notice": "This is a regression projection, not a complete or conforming P2H Package.",
+  "source": {
+    "id": "src-001",
+    "role": "primary",
+    "original_name": "2503.17744v1.pdf",
+    "media_type": "application/pdf",
+    "sha256": "10cb935f09510e179ed2e6aa5e593c853c68d48ad5316f8b0ed0e70a88f9eaa2",
+    "size": 754271,
+    "page_count": 17,
+    "source_class": "born-digital",
+    "extraction_modes": [
+      "native-pdf",
+      "ocr"
+    ],
+    "embedded_path": null,
+    "x-origin": {
+      "kind": "remote-url",
+      "url": "https://arxiv.org/pdf/2503.17744v1",
+      "final_url": "https://arxiv.org/pdf/2503.17744v1",
+      "sha256": "10cb935f09510e179ed2e6aa5e593c853c68d48ad5316f8b0ed0e70a88f9eaa2"
+    }
+  },
+  "package_id": "urn:uuid:1e9ffd99-e231-5fff-89a5-62827c54b8ca",
+  "document_sha256": "8304202a57cbb232541acc6609822ca9fc97fcfc6fc8b98e88aaf6b8d161de2b",
+  "pages_sha256": "46f339db29104334b9ec01e472a216929bdaf9777e84c735b37c02f11064cec8",
+  "elements_sha256": "93f0c497d988d11d0a858cc5a0e70fdaf35eee14635ed69c09e18ded585581ba",
+  "omissions_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "page_count": 17,
+  "element_count": 397,
+  "omission_count": 0,
+  "page_images": [
+    {
+      "path": "assets/evidence/pages/src-001/page-000001.png",
+      "width": 2481,
+      "height": 3508,
+      "rgb_sha256": "99308b327bc292a89dbbc4d97e2544759001358d35ea794df23bab3861d75dbb",
+      "dhash": "0012020e0e0a1b00"
+    },
+    {
+      "path": "assets/evidence/pages/src-001/page-000002.png",
+      "width": 2481,
+      "height": 3508,
+      "rgb_sha256": "40a196dd0b0016245b877ca550d7ea144fa2380c0d5fcb56be0d553ad36cd004",
+      "dhash": "00002b2733230716"
+    },
+    {
+      "path": "assets/evidence/pages/src-001/page-000003.png",
+      "width": 2481,
+      "height": 3508,
+      "rgb_sha256": "2bc4de1f0b6001c8e77be00ca366bd11204ae4c77a0e39a29531a8ed6f8b15ca",
+      "dhash": "00000b032b333b13"
+    },
+    {
+      "path": "assets/evidence/pages/src-001/page-000004.png",
+      "width": 2481,
+      "height": 3508,
+      "rgb_sha256": "e00f4d3681141a757c665ffaf12b89853fd7fd3b3f9600dc0ab832b75f656a15",
+      "dhash": "000223232b2b2337"
+    },
+    {
+      "path": "assets/evidence/pages/src-001/page-000005.png",
+      "width": 2481,
+      "height": 3508,
+      "rgb_sha256": "a2221e0d772dad9757e225e3b1cca9b7dafa523dda4af83f9ed1db44272de587",
+      "dhash": "0000130b33230b03"
+    },
+    {
+      "path": "assets/evidence/pages/src-001/page-000006.png",
+      "width": 2481,
+      "height": 3508,
+      "rgb_sha256": "4f2d48445fdf87f9711adc5f7439319198dc27af94f9076d4bc07305ca9858f9",
+      "dhash": "0000232317160606"
+    },
+    {
+      "path": "assets/evidence/pages/src-001/page-000007.png",
+      "width": 2481,
+      "height": 3508,
+      "rgb_sha256": "592ad6950dfc77982fc1799446fcd47b6b5e7e7407af85091298d02519046a75",
+      "dhash": "0000232b03030303"
+    },
+    {
+      "path": "assets/evidence/pages/src-001/page-000008.png",
+      "width": 2481,
+      "height": 3508,
+      "rgb_sha256": "b5ff36de04198e37223cf43a19f303ec2c26837136d112f9ce230be9fb9e2fd2",
+      "dhash": "000233330f1e1616"
+    },
+    {
+      "path": "assets/evidence/pages/src-001/page-000009.png",
+      "width": 2481,
+      "height": 3508,
+      "rgb_sha256": "8576f4b06b47807fa3386094d617d921416b688e16a887ec47e7150ce03cc339",
+      "dhash": "0001230313131303"
+    },
+    {
+      "path": "assets/evidence/pages/src-001/page-000010.png",
+      "width": 2481,
+      "height": 3508,
+      "rgb_sha256": "f286972436e57156eded3434baaab8b4a74333e883ebef83caa950cf4d58b24d",
+      "dhash": "002a23230b272333"
+    },
+    {
+      "path": "assets/evidence/pages/src-001/page-000011.png",
+      "width": 2481,
+      "height": 3508,
+      "rgb_sha256": "19f0afc0ea2d2aca732d023408f281e199e32c0341beeffd0866e22dbc874bba",
+      "dhash": "000003130b230716"
+    },
+    {
+      "path": "assets/evidence/pages/src-001/page-000012.png",
+      "width": 2481,
+      "height": 3508,
+      "rgb_sha256": "02e09159aedb84364e1904675921062810750f20967b81a3c5cbb6aeeeb5d32c",
+      "dhash": "00000f0726272313"
+    },
+    {
+      "path": "assets/evidence/pages/src-001/page-000013.png",
+      "width": 2481,
+      "height": 3508,
+      "rgb_sha256": "14980157c82cb00a995d169ba4c1ab18f66e39fe60cfcd597efa11598be490b8",
+      "dhash": "00240b0303070b0b"
+    },
+    {
+      "path": "assets/evidence/pages/src-001/page-000014.png",
+      "width": 2481,
+      "height": 3508,
+      "rgb_sha256": "4a3a0836516e7a23fc005ffc41b49fa5813d006728013ce0f3b6cfe61ba16a01",
+      "dhash": "000007270f272307"
+    },
+    {
+      "path": "assets/evidence/pages/src-001/page-000015.png",
+      "width": 2481,
+      "height": 3508,
+      "rgb_sha256": "692ebce5fcf17b1a26b64991dbf149477a76a1bd9abd7d7f8524749bda1c72d7",
+      "dhash": "00000b2313030313"
+    },
+    {
+      "path": "assets/evidence/pages/src-001/page-000016.png",
+      "width": 2481,
+      "height": 3508,
+      "rgb_sha256": "b83c05fbf7df75c8ee7a6076e885adfc21c75e62e8776c0c32c39d569c90e5b4",
+      "dhash": "0004273317071322"
+    },
+    {
+      "path": "assets/evidence/pages/src-001/page-000017.png",
+      "width": 2481,
+      "height": 3508,
+      "rgb_sha256": "b774d6a95feac23ec0fea2edcb88c786a83dc14a95c9b522cab37e7627b3e430",
+      "dhash": "0000000000200303"
+    }
+  ],
+  "engine_fingerprint": {
+    "poppler": [
+      "26.04.0"
+    ],
+    "vision": [
+      "26.5.1"
+    ]
+  },
+  "validation": {
+    "valid": false,
+    "checks": {
+      "manifest_schema": "passed",
+      "xml_well_formed": "passed",
+      "jats_bits_schema": "passed",
+      "p2h_profile": "passed",
+      "id_uniqueness": "passed",
+      "cross_references": "passed",
+      "page_coverage": "partial",
+      "element_provenance": "passed",
+      "asset_integrity": "passed",
+      "checksum_integrity": "passed"
+    },
+    "statistics": {
+      "sources": 1,
+      "pages": 17,
+      "elements": 397,
+      "omissions": 0,
+      "errors": 1,
+      "warnings": 0
+    },
+    "error_codes": [
+      "page_coverage_not_audited"
+    ],
+    "warning_codes": []
+  }
+}

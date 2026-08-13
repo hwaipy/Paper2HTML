@@ -14,15 +14,23 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m src.converter.cli",
         description="Convert one born-digital PDF into a minimal P2H Package 0.1 directory",
     )
-    parser.add_argument("input_pdf", type=Path)
+    parser.add_argument("input", type=Path, help="local PDF or paper2html-pdf-source descriptor")
     parser.add_argument("output", type=Path)
     parser.add_argument(
         "--replace", action="store_true", help="atomically replace an existing output directory"
     )
     parser.add_argument("--created-at", help="fixed RFC 3339 UTC completion time for reproducible tests")
     parser.add_argument("--cache-dir", type=Path, help="validator resource cache")
+    parser.add_argument("--download-cache-dir", type=Path, help="verified remote-PDF cache")
     parser.add_argument(
-        "--allow-network", action="store_true", help="download missing locked validation resources"
+        "--secure-dns",
+        action="store_true",
+        help="resolve remote hosts through pinned TLS DNS when local DNS uses synthetic addresses",
+    )
+    parser.add_argument(
+        "--allow-network",
+        action="store_true",
+        help="download a descriptor PDF and missing locked validation resources",
     )
     parser.add_argument("--json", action="store_true", dest="json_output")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -33,13 +41,15 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         report = convert_pdf(
-            args.input_pdf,
+            args.input,
             args.output,
             ConversionOptions(
                 created_at=args.created_at,
                 replace=args.replace,
                 allow_network=args.allow_network,
                 cache_dir=args.cache_dir,
+                download_cache_dir=args.download_cache_dir,
+                secure_dns=args.secure_dns,
             ),
         )
     except ConversionError as exc:
