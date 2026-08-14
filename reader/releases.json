@@ -1,21 +1,10 @@
 {
   "format": "paper2html-reader-releases",
   "format_version": "1",
-  "default": "0.1.1",
+  "default": "0.1.0",
   "releases": {
     "0.1.0": {
       "base_url": "https://hwaipy.github.io/Paper2HTML/reader/0.1.0/",
-      "entrypoints": {
-        "stylesheet": "reader.css",
-        "script": "reader.js"
-      },
-      "sha256": {
-        "reader.css": "05dfc81d8221942012a2540daf3d24882addb5561f628c14470d7eb33edffda0",
-        "reader.js": "99cd689159411ec1b9d4199ae29d671e6dee5cbe79d90add965286862c7cd4dd"
-      }
-    },
-    "0.1.1": {
-      "base_url": "https://hwaipy.github.io/Paper2HTML/reader/0.1.1/",
       "entrypoints": {
         "stylesheet": "reader.css",
         "script": "reader.js"
