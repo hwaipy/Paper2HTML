@@ -24,7 +24,8 @@ P2H Package 是一种可移植的结构化文档目录。
 4. 每个可寻址内容元素在逐页截图中的位置；
 5. 页面、元素和源文档之间的映射；
 6. OCR、原生 PDF 提取及人工修订的来源记录；
-7. 完整性校验信息。
+7. 完整性校验信息；
+8. 分别用于 HTTP/HTTPS 发布和本地双击阅读的浏览器入口。
 
 ## 2. 规范用语
 
@@ -42,6 +43,9 @@ P2H Package 是一种可移植的结构化文档目录。
 - “包路径”表示 JSON、JSONL、manifest 或 `checksums.sha256` 中从结果包根目录开始的路径；
 - “XML 资源引用”表示 `content/document.xml` 中相对于该 XML 文件的 `xlink:href`；
 - “结果包根目录”表示包含 `manifest.json` 的目录，在本规范中记为 `OUTPUT_ROOT/`。
+- “Reader 发布版本”表示在独立网站通过 HTTPS 托管、版本固定且内容不可变的 Reader JavaScript、
+  CSS 及其运行时静态资源集合；
+- “本地文本快照”表示 `index-local.html` 中供 Reader 在 `file://` 模式读取的规范文本文件副本。
 
 ## 3. 标准目录结构
 
@@ -49,6 +53,8 @@ P2H Package 是一种可移植的结构化文档目录。
 
 ```text
 OUTPUT_ROOT/
+├── index.html
+├── index-local.html
 ├── manifest.json
 ├── content/
 │   └── document.xml
@@ -75,6 +81,8 @@ OUTPUT_ROOT/
 
 其中：
 
+- `index.html`：HTTP/HTTPS 静态发布入口；
+- `index-local.html`：桌面文件系统本地双击入口；
 - `manifest.json`：结果包入口和文档清单；
 - `content/document.xml`：唯一的规范化正文；
 - `provenance/pages.jsonl`：页面映射；
@@ -97,6 +105,46 @@ annotations/
 ```
 
 其他强制文件不得省略。即使对应 JSONL 文件为空，也必须创建空文件。
+
+### 3.1 Reader 双入口
+
+两个入口必须位于结果包根目录，并引用同一个兼容的 Reader 发布版本。Reader 发布文件不得复制到
+每个结果包中；入口必须通过 HTTPS 引用版本固定且内容不可变的发布文件。本设计不限定发布服务，
+也不依赖特定托管平台。完整的设计理由和实现边界见
+[`READER_DELIVERY.md`](READER_DELIVERY.md)。
+
+`index.html` 用于 HTTP/HTTPS：Reader 必须以入口所在目录为包根目录，通过同源 Fetch 请求读取
+`manifest.json` 及其声明的文本文件。Reader 代码可以来自另一网站，但不得把包根目录错误地解析为
+Reader 发布网站。
+
+`index-local.html` 用于 `file://`：它必须内嵌结果包内 Reader 可能通过 JavaScript 读取的全部
+UTF-8 文本文件在生成时的精确字节内容，包括：
+
+- `manifest.json`；
+- `content/document.xml`；
+- `provenance/pages.jsonl`；
+- `provenance/elements.jsonl`；
+- `provenance/omissions.jsonl`；
+- `validation/report.json`；
+- manifest 存在 annotations 声明时的 `annotations/index.json` 及全部 layer 文件；
+- manifest 将来声明、Reader 阅读时必须读取的其他 UTF-8 文本文件；
+- Reader 需要读取的文本型补充资源。
+
+每个嵌入文件必须保留明确的规范化包路径，内容必须使用能够安全出现在 HTML 中的确定性编码。启动
+协议必须带版本；P2H 0.1 推荐对每个文件的原始 UTF-8 字节分别进行 Base64 编码，再放入 JSON 路径
+映射。不得把未转义的 XML 或 JSONL 直接拼入可执行 `<script>` 文本。
+
+本地文本快照不得包含：
+
+- `checksums.sha256`；
+- `index.html` 或 `index-local.html`；
+- 图片、音视频、字体、源 PDF 或其他二进制文件。
+
+`checksums.sha256` 必须校验 `index-local.html`；若本地文本快照又包含该 checksum 文件，就会产生
+自引用，因此必须排除。Reader 在 HTTP/HTTPS 模式必须读取包内真实文本，不得优先使用本地快照。
+
+图片、音视频及其他二进制资源在两种模式下必须使用以入口 HTML 所在目录为包根目录解析的包内
+相对 URL。`file://` 模式不得仅为加载这些资源而创建 Blob URL 或复制为 Base64。
 
 ## 4. 文件和路径规则
 
@@ -127,7 +175,7 @@ _
 
 用户提供的原始文件名只保存在 manifest 元数据中，不直接用作内部文件名。
 
-JSON、JSONL 和 XML 文本必须：
+HTML、JSON、JSONL 和 XML 文本必须：
 
 - 使用 UTF-8；
 - 不带 BOM；
@@ -1097,7 +1145,11 @@ abcdef0123456789...  content/document.xml
 - 按路径 UTF-8 字节序升序排列；
 - 不包含目录；
 - 不包含 `checksums.sha256` 自身；
+- 必须包含 `index.html` 和 `index-local.html`；
 - 不得遗漏空 JSONL 文件。
+
+Converter 的生成顺序必须避免循环依赖：先完成全部规范文本和最终验证报告，再生成两个 HTML 入口，
+最后生成 `checksums.sha256`。`index-local.html` 中的文本快照因此不包含 checksum 文件。
 
 ## 20. `validation/report.json`
 
@@ -1157,6 +1209,12 @@ not-applicable
 - JSONL 每一非空行均是独立有效 JSON。
 - `pages.jsonl`、`elements.jsonl`、`omissions.jsonl` 和 annotation layer 的每一非空行分别通过对应 record Schema；
 - annotation index 和 validation report 分别通过对应 Schema；
+- `index.html` 和 `index-local.html` 均存在、是规范 UTF-8 HTML，并引用同一个固定 HTTPS Reader
+  发布版本；
+- `index.html` 不包含文档文本快照；
+- `index-local.html` 的启动协议版本受支持，嵌入路径安全且无遗漏、无额外路径，每个解码结果与
+  对应包内文本文件逐字节一致；
+- 本地文本快照不包含 checksum、入口 HTML 或二进制资源；
 
 ### 21.2 XML
 
@@ -1267,6 +1325,8 @@ JSON Schema 关键字而省略。`schema/0.1/README.md` 给出分层验证入口
 
 ```text
 OUTPUT_ROOT/
+├── index.html
+├── index-local.html
 ├── manifest.json
 ├── content/
 │   └── document.xml
@@ -1304,6 +1364,7 @@ Paper2HTML Structured Document Package 0.1
 6. 所有页面都有逐页截图，所有内容元素都通过页面引用和区域坐标关联视觉证据；
 7. 所有内部引用和资源路径有效；
 8. 所有文件通过 SHA-256；
-9. `validation/report.json` 中 `"valid": true`。
+9. 两个 Reader 入口符合 3.1 节，且本地文本快照与其对应规范文件逐字节一致；
+10. `validation/report.json` 中 `"valid": true`。
 
 原生 PDF、扫描 PDF 和混合 PDF 使用同一套输出格式，并全部经过 OCR、页面截图和元素级坐标定位。

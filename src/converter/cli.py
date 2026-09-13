@@ -32,6 +32,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="download a descriptor PDF and missing locked validation resources",
     )
+    parser.add_argument(
+        "--reader-base-url",
+        help="versioned HTTPS directory containing reader.js and reader.css",
+    )
     parser.add_argument("--json", action="store_true", dest="json_output")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
@@ -50,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
                 cache_dir=args.cache_dir,
                 download_cache_dir=args.download_cache_dir,
                 secure_dns=args.secure_dns,
+                **({"reader_base_url": args.reader_base_url} if args.reader_base_url else {}),
             ),
         )
     except ConversionError as exc:

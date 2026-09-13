@@ -37,6 +37,10 @@ def test_committed_golden_projection_is_self_consistent() -> None:
     assert projection["notice"].endswith("not a complete or conforming P2H Package.")
     assert projection["source"] == manifest["sources"][0]
     assert projection["package_id"] == manifest["package_id"]
+    assert projection["entrypoints"] == {
+        "http_sha256": _sha256_bytes((GOLDEN / "expected/index.html").read_bytes()),
+        "local_sha256": _sha256_bytes((GOLDEN / "expected/index-local.html").read_bytes()),
+    }
     assert projection["page_count"] == len(pages) == 17
     assert projection["element_count"] == len(elements) == 167
     assert projection["omission_count"] == len(omissions) == 97

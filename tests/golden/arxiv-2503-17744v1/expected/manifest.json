@@ -3,7 +3,7 @@
   "format": "paper2html-package",
   "format_version": "0.1",
   "package_id": "urn:uuid:1e9ffd99-e231-5fff-89a5-62827c54b8ca",
-  "created_at": "2026-08-12T00:00:00Z",
+  "created_at": "2026-09-13T00:00:00Z",
   "generator": {
     "name": "paper2html-minimal-converter",
     "version": "0.1.0"

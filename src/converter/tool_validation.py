@@ -25,9 +25,7 @@ def validate_rendered_pages(
     pages: list[RenderedPage], info: PDFInfo, destination: Path
 ) -> list[RenderedPage]:
     if len(pages) != info.page_count:
-        raise ToolContractError(
-            f"page renderer returned {len(pages)} pages; expected {info.page_count}"
-        )
+        raise ToolContractError(f"page renderer returned {len(pages)} pages; expected {info.page_count}")
     root = destination.resolve()
     for expected, page in enumerate(pages, 1):
         if page.number != expected:

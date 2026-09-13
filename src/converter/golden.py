@@ -16,6 +16,8 @@ from .pipeline import ConversionError, _descriptor
 from .quality import build_quality_report
 
 STRUCTURED_FILES = (
+    "index.html",
+    "index-local.html",
     "manifest.json",
     "content/document.xml",
     "provenance/pages.jsonl",
@@ -140,6 +142,10 @@ def build_projection(package: Path) -> dict[str, Any]:
         "notice": "This is a regression projection, not a complete or conforming P2H Package.",
         "source": manifest["sources"][0],
         "package_id": manifest["package_id"],
+        "entrypoints": {
+            "http_sha256": _sha256_bytes((package / "index.html").read_bytes()),
+            "local_sha256": _sha256_bytes((package / "index-local.html").read_bytes()),
+        },
         "document_sha256": _sha256_bytes((package / "content/document.xml").read_bytes()),
         "pages_sha256": _canonical_sha(pages),
         "elements_sha256": _canonical_sha(element_projection),
@@ -165,6 +171,7 @@ def compare_projection(expected: dict[str, Any], actual: dict[str, Any]) -> list
         "format_version",
         "source",
         "package_id",
+        "entrypoints",
         "document_sha256",
         "pages_sha256",
         "elements_sha256",

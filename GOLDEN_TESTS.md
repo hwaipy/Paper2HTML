@@ -3,6 +3,8 @@
 The committed golden case is `tests/golden/arxiv-2503-17744v1/`. It contains a
 version-pinned arXiv PDF descriptor and the conversion's structured expected
 files. It deliberately contains neither the PDF nor rendered page PNGs.
+The structured expected files include both Reader entrypoints; the local entry
+contains the Base64 text snapshot but no binary page or figure data.
 
 The `expected/` directory and `projection.json` are regression evidence, not a
 complete P2H Package. They must never be described as conforming or passed to
@@ -44,12 +46,14 @@ The integration test enables the converter's pinned-TLS secure DNS mode so it
 also works on hosts whose local proxy publishes reserved synthetic DNS
 addresses. It never connects to those synthetic addresses.
 
-The test downloads the exact descriptor bytes into a temporary verified cache,
-converts all 17 pages, independently validates the complete generated package,
-and compares it with `projection.json`. It then unconditionally converts the
-downloaded cache file as a local PDF and checks that local and URL inputs
-produce identical JATS, pages, elements, and omissions files. No ignored
-`testdata/` file is required.
+The test downloads the exact descriptor bytes into the persistent verified
+cache at `testdata/cache/downloads/`, converts all 17 pages,
+independently validates the complete generated package, and compares it with
+`projection.json`. The first run downloads the PDF; later runs verify and reuse
+the cached bytes. Set `P2H_GOLDEN_DOWNLOAD_CACHE` to use another cache directory.
+The test then unconditionally converts the cached file as a local PDF and checks
+that local and URL inputs produce identical JATS, pages, elements, and omissions
+files. The cache is ignored by Git and may be deleted at any time.
 
 The stable projection checks exact JATS, native text/coordinates, reading order,
 metadata provenance, source identity, page dimensions/count, omission state,

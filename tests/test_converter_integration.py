@@ -13,12 +13,18 @@ from lxml import etree
 from src.converter.golden import build_projection, compare_projection
 
 
+def _golden_download_cache() -> Path:
+    configured = os.environ.get("P2H_GOLDEN_DOWNLOAD_CACHE")
+    return Path(configured) if configured else Path("testdata/cache/downloads")
+
+
 @pytest.mark.integration
 def test_real_arxiv_url_matches_committed_golden_projection(tmp_path: Path) -> None:
     if os.environ.get("P2H_RUN_NETWORK_GOLDEN") != "1":
         pytest.skip("set P2H_RUN_NETWORK_GOLDEN=1 to run the real network golden regression")
     golden = Path("tests/golden/arxiv-2503-17744v1")
     source = golden / "source.json"
+    download_cache = _golden_download_cache()
     output = tmp_path / "remote"
     completed = subprocess.run(
         [
@@ -30,7 +36,7 @@ def test_real_arxiv_url_matches_committed_golden_projection(tmp_path: Path) -> N
             "--created-at",
             "2026-08-12T00:00:00Z",
             "--download-cache-dir",
-            str(tmp_path / "downloads"),
+            str(download_cache),
             "--secure-dns",
             "--allow-network",
         ],
@@ -55,7 +61,7 @@ def test_real_arxiv_url_matches_committed_golden_projection(tmp_path: Path) -> N
     assert [error["code"] for error in independent_report["errors"]] == expected["validation"]["error_codes"]
 
     descriptor = json.loads(source.read_text())
-    local_source = tmp_path / "downloads" / f"{descriptor['sha256']}.pdf"
+    local_source = download_cache / f"{descriptor['sha256']}.pdf"
     assert local_source.is_file()
     local_output = tmp_path / "local"
     completed = subprocess.run(
@@ -145,7 +151,7 @@ def test_real_arxiv_url_matches_committed_golden_projection(tmp_path: Path) -> N
     assert "rate-distance" in str(tree.xpath("normalize-space(string(//ref[18]))"))
     assert "proof-of-principle" in str(tree.xpath("normalize-space(string(//ref[20]))"))
     assert "finite-key" in str(tree.xpath("normalize-space(string(//ref[47]))"))
-    assert "repeaterless quantum communications" in str(tree.xpath("normalize-space(string(//ref[19]))"))
+    assert "repeaterless quantum communications" in str(tree.xpath("normalize-space(string(//ref[37]))"))
     assert "Entangling independent photons" in str(tree.xpath("normalize-space(string(//ref[50]))"))
     assert "repeater-less" not in xml
     assert "Entan-gling" not in xml

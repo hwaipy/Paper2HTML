@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import fcntl
 import hashlib
+import html
 import http.client
 import importlib
 import ipaddress
@@ -65,10 +67,79 @@ REMOTE_TIMEOUT_SECONDS = 30
 REMOTE_TOTAL_TIMEOUT_SECONDS = 120
 DOH_HOST = "cloudflare-dns.com"
 DOH_ADDRESS = "1.1.1.1"
+READER_RELEASE_CATALOG_PATH = Path(__file__).resolve().parents[2] / "reader/releases.json"
+READER_BOOTSTRAP_PROTOCOL = "paper2html-reader-bootstrap/1"
 
 
 class ConversionError(RuntimeError):
     """Raised when the converter cannot produce a complete package directory."""
+
+
+@dataclass(frozen=True)
+class ReaderRelease:
+    version: str
+    base_url: str
+    stylesheet: str
+    script: str
+
+
+def _load_default_reader_release() -> ReaderRelease:
+    try:
+        catalog = json.loads(READER_RELEASE_CATALOG_PATH.read_text(encoding="utf-8"))
+        if catalog["format"] != "paper2html-reader-releases" or catalog["format_version"] != "1":
+            raise ValueError("unsupported release catalog format")
+        version = catalog["default"]
+        release = catalog["releases"][version]
+        entrypoints = release["entrypoints"]
+        result = ReaderRelease(
+            version=version,
+            base_url=release["base_url"],
+            stylesheet=entrypoints["stylesheet"],
+            script=entrypoints["script"],
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise ConversionError(f"cannot load Reader release catalog: {exc}") from exc
+    _reader_release_urls(result.base_url, result.stylesheet, result.script)
+    return result
+
+
+def _reader_asset_name(value: str) -> str:
+    parsed = urllib.parse.urlsplit(value)
+    if (
+        not value
+        or parsed.scheme
+        or parsed.netloc
+        or parsed.query
+        or parsed.fragment
+        or value.startswith("/")
+        or "/" in value
+        or "\\" in value
+        or value in {".", ".."}
+    ):
+        raise ConversionError("Reader entrypoint must be a file name in the release directory")
+    return value
+
+
+def _reader_release_urls(base_url: str, stylesheet: str, script: str) -> tuple[str, str]:
+    parsed = urllib.parse.urlsplit(base_url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ConversionError("reader base URL must be an absolute HTTPS directory URL")
+    normalized = base_url if base_url.endswith("/") else base_url + "/"
+    return (
+        urllib.parse.urljoin(normalized, _reader_asset_name(stylesheet)),
+        urllib.parse.urljoin(normalized, _reader_asset_name(script)),
+    )
+
+
+DEFAULT_READER_RELEASE = _load_default_reader_release()
+DEFAULT_READER_BASE_URL = DEFAULT_READER_RELEASE.base_url
 
 
 @dataclass(frozen=True)
@@ -79,6 +150,7 @@ class ConversionOptions:
     cache_dir: Path | None = None
     download_cache_dir: Path | None = None
     secure_dns: bool = False
+    reader_base_url: str = DEFAULT_READER_BASE_URL
 
 
 @dataclass(frozen=True)
@@ -1943,6 +2015,86 @@ def _write_checksums(root: Path) -> None:
     (root / "checksums.sha256").write_text(payload, encoding="utf-8", newline="\n")
 
 
+def _reader_text_paths(root: Path, manifest: dict[str, Any]) -> list[str]:
+    paths = [
+        "manifest.json",
+        manifest["document"]["content"],
+        manifest["provenance"]["pages"],
+        manifest["provenance"]["elements"],
+        manifest["provenance"]["omissions"],
+        manifest["validation"],
+    ]
+    annotations = manifest.get("annotations")
+    if annotations:
+        index_path = annotations["index"]
+        paths.append(index_path)
+        index = json.loads((root / index_path).read_text(encoding="utf-8"))
+        paths.extend(layer["path"] for layer in index.get("layers", []))
+    unique = sorted(set(paths), key=lambda value: value.encode("utf-8"))
+    for path in unique:
+        target = root / path
+        if not target.is_file():
+            raise ConversionError(f"Reader text snapshot file is missing: {path}")
+        try:
+            target.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ConversionError(f"Reader text snapshot is not UTF-8: {path}: {exc}") from exc
+    return unique
+
+
+def _reader_html(style_url: str, script_url: str, bootstrap: dict[str, Any]) -> str:
+    bootstrap_json = json.dumps(
+        bootstrap,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="paper2html-package" content="./manifest.json">
+  <title>Paper2HTML Reader</title>
+  <link rel="stylesheet" href="{html.escape(style_url, quote=True)}">
+</head>
+<body>
+  <main id="paper2html-reader"><p>正在加载 Paper2HTML Reader…</p></main>
+  <script id="paper2html-bootstrap" type="application/json">{bootstrap_json}</script>
+  <script defer src="{html.escape(script_url, quote=True)}"></script>
+  <noscript>阅读此文档需要启用 JavaScript。</noscript>
+</body>
+</html>
+"""
+
+
+def _write_reader_entrypoints(root: Path, manifest: dict[str, Any], base_url: str) -> None:
+    style_url, script_url = _reader_release_urls(
+        base_url,
+        DEFAULT_READER_RELEASE.stylesheet,
+        DEFAULT_READER_RELEASE.script,
+    )
+    common = {"protocol": READER_BOOTSTRAP_PROTOCOL, "packageBase": "./"}
+    http_entrypoint = root / "index.html"
+    http_entrypoint.write_text(
+        _reader_html(style_url, script_url, {**common, "mode": "http"}),
+        encoding="utf-8",
+        newline="\n",
+    )
+    files = {
+        path: base64.b64encode((root / path).read_bytes()).decode("ascii")
+        for path in _reader_text_paths(root, manifest)
+    }
+    local_entrypoint = root / "index-local.html"
+    local_entrypoint.write_text(
+        _reader_html(style_url, script_url, {**common, "mode": "embedded", "files": files}),
+        encoding="utf-8",
+        newline="\n",
+    )
+    http_entrypoint.chmod(0o644)
+    local_entrypoint.chmod(0o644)
+
+
 def _placeholder_report() -> dict[str, Any]:
     return {
         "$schema": REPORT_SCHEMA,
@@ -2020,6 +2172,11 @@ def convert_pdf(
     tools: ConversionTools | None = None,
 ) -> dict[str, Any]:
     options = options or ConversionOptions()
+    _reader_release_urls(
+        options.reader_base_url,
+        DEFAULT_READER_RELEASE.stylesheet,
+        DEFAULT_READER_RELEASE.script,
+    )
     tools = tools or default_conversion_tools()
     input_path = pdf.resolve()
     safe_output = _validate_output_path(input_path, output)
@@ -2177,6 +2334,7 @@ def convert_pdf(
         }
         _json_dump(root / "manifest.json", manifest)
         _json_dump(root / "validation/report.json", _placeholder_report())
+        _write_reader_entrypoints(root, manifest, options.reader_base_url)
         _write_checksums(root)
         validator = importlib.import_module("src.validator.validator")
         validation_options = validator.ValidationOptions(
@@ -2192,6 +2350,8 @@ def convert_pdf(
             raise ConversionError(f"validator could not execute: {details}")
         result.report["validated_at"] = created_at
         validator.write_report(root, result)
+        _write_reader_entrypoints(root, manifest, options.reader_base_url)
+        _write_checksums(root)
         publish()
         return result.report
     except Exception:

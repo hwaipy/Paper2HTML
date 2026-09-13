@@ -3,7 +3,8 @@
 This directory pins the public arXiv v1 download by byte size and SHA-256. It
 does not redistribute the PDF.
 
-`expected/` contains only structured conversion output. `projection.json`
+`expected/` contains only structured conversion output, including the HTTP and
+local Reader entrypoints but excluding their binary resources. `projection.json`
 contains regression digests and page-render summaries. Neither directory is a
 complete P2H Package because the required page PNGs are intentionally absent.
 

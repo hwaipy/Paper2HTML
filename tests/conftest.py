@@ -10,6 +10,7 @@ import pytest
 from lxml import etree
 from PIL import Image
 
+from src.converter.pipeline import _write_reader_entrypoints
 from src.validator.validator import ADDRESSABLE_TAGS
 
 ARTICLE = """<?xml version="1.0" encoding="UTF-8"?>
@@ -175,6 +176,7 @@ def build_package(root: Path) -> tuple[Path, Path]:
         "warnings": [],
     }
     dump(root / "validation/report.json", report)
+    _write_reader_entrypoints(root, manifest, "https://reader.example/0.1.0/")
     files = sorted(p for p in root.rglob("*") if p.is_file() and p.name != "checksums.sha256")
     (root / "checksums.sha256").write_text(
         "".join(
