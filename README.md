@@ -10,6 +10,10 @@ reporting its current semantic and coverage limits explicitly.
 
 Paper2HTML 用于将书籍、期刊论文等出版物——主要是 PDF 格式的内容——转换为标准、结构化且可供程序处理的文档及配套资源，再通过 HTML 与 JavaScript 将其呈现为适合现代设备阅读的内容。
 
+项目级 HTML 阅读器位于 [`reader/`](reader/README.md)。它作为统一发布的版本化工具维护，不复制到
+每个转换结果包中。结果包通过 `index.html` 支持 HTTP/HTTPS 静态发布，通过 `index-local.html`
+支持本地双击阅读；双入口约定见 [`READER_DELIVERY.md`](READER_DELIVERY.md)。
+
 项目希望摆脱 PDF 固定页面布局的限制，让同一份文献能够在电脑、手机及其他不同尺寸的屏幕上获得清晰、舒适且一致的阅读体验。
 
 ## 核心目标

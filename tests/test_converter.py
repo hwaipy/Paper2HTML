@@ -16,7 +16,7 @@ from PIL import Image
 from src.converter import golden as golden_module
 from src.converter import pipeline
 from src.converter.golden import GoldenError, build_projection, compare_projection, update_golden
-from src.converter.models import EngineInfo, PDFInfo, RenderedPage, TextExtractionResult
+from src.converter.models import ContentBlock, EngineInfo, PDFInfo, RenderedPage, TextExtractionResult
 from src.converter.pipeline import ConversionError, ConversionOptions, TextBox
 from src.converter.tool_interfaces import ConversionTools
 
@@ -176,7 +176,7 @@ def test_formula_only_fragments_and_prose_are_distinguished() -> None:
 
 
 def test_formula_omission_forces_paragraph_boundary() -> None:
-    blocks: list[pipeline.ContentBlock] = []
+    blocks: list[ContentBlock] = []
     before = TextBox(1, "approximatively regarded as", (0.2, 0.2, 0.8, 0.22), 10)
     after = TextBox(1, "where the channel fluctuates", (0.2, 0.28, 0.8, 0.30), 10)
     pipeline._append_text(blocks, before)
@@ -244,6 +244,8 @@ def test_conversion_builds_stable_package_skeleton(tmp_path: Path, monkeypatch: 
         ConversionOptions(created_at="2026-08-12T00:00:00Z"),
     )
     assert report["checks"]["page_coverage"] == "partial"
+    assert (output / "index.html").is_file()
+    assert (output / "index-local.html").is_file()
     assert (output / "content/document.xml").is_file()
     assert (output / "assets/evidence/pages/src-001/page-000001.png").is_file()
     manifest = json.loads((output / "manifest.json").read_text())
@@ -251,6 +253,14 @@ def test_conversion_builds_stable_package_skeleton(tmp_path: Path, monkeypatch: 
     assert manifest["created_at"] == "2026-08-12T00:00:00Z"
     stored_report = json.loads((output / "validation/report.json").read_text())
     assert stored_report["validated_at"] == "2026-08-12T00:00:00Z"
+    local_entrypoint = (output / "index-local.html").read_text()
+    assert "paper2html-reader-bootstrap/1" in local_entrypoint
+    assert "https://hwaipy.github.io/Paper2HTML/reader/0.1.2/reader.js" in local_entrypoint
+    assert "checksums.sha256" not in local_entrypoint
+    checksum_paths = {
+        line.split("  ", 1)[1] for line in (output / "checksums.sha256").read_text().splitlines()
+    }
+    assert {"index.html", "index-local.html"} <= checksum_paths
     elements = [json.loads(line) for line in (output / "provenance/elements.jsonl").read_text().splitlines()]
     assert elements
     assert all(
@@ -270,6 +280,15 @@ def test_conversion_builds_stable_package_skeleton(tmp_path: Path, monkeypatch: 
     assert issn["revisions"][0]["before"] == ""
     assert issn["revisions"][0]["after"] == "2331-8422"
     assert issn["revisions"][0]["x-registry"].startswith("https://portal.issn.org/")
+
+
+def test_default_reader_release_comes_from_catalog() -> None:
+    catalog = json.loads(pipeline.READER_RELEASE_CATALOG_PATH.read_text(encoding="utf-8"))
+    release = catalog["releases"][catalog["default"]]
+    assert pipeline.DEFAULT_READER_RELEASE.version == catalog["default"]
+    assert pipeline.DEFAULT_READER_RELEASE.base_url == release["base_url"]
+    assert pipeline.DEFAULT_READER_RELEASE.stylesheet == release["entrypoints"]["stylesheet"]
+    assert pipeline.DEFAULT_READER_RELEASE.script == release["entrypoints"]["script"]
 
 
 def test_conversion_accepts_replacement_tools_and_records_their_engines(
@@ -385,6 +404,25 @@ def test_existing_output_is_not_touched_without_replace(tmp_path: Path) -> None:
     else:
         raise AssertionError("existing output should be rejected")
     assert marker.read_text() == "keep"
+
+
+@pytest.mark.parametrize(
+    "reader_url",
+    [
+        "http://reader.example/0.1.0/",
+        "https://user:secret@reader.example/0.1.0/",
+        "https://reader.example/0.1.0/?channel=latest",
+    ],
+)
+def test_reader_release_url_must_be_fixed_https(tmp_path: Path, reader_url: str) -> None:
+    source = tmp_path / "paper.pdf"
+    source.write_bytes(b"%PDF-1.4\n")
+    with pytest.raises(ConversionError, match="reader base URL"):
+        pipeline.convert_pdf(
+            source,
+            tmp_path / "result",
+            ConversionOptions(reader_base_url=reader_url),
+        )
 
 
 def test_replace_succeeds_atomically(tmp_path: Path, monkeypatch: Any) -> None:

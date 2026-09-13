@@ -186,6 +186,11 @@ def test_symlink_is_rejected(package: tuple[Path, Path], cache_dir: Path) -> Non
             lambda p: p.write_text(p.read_text().replace("rid=", "rid=") + "<"),
             "xml_syntax",
         ),
+        (
+            "index-local.html",
+            lambda p: p.write_text(p.read_text().replace("PD94bW", "QD94bW", 1)),
+            "reader_snapshot_mismatch",
+        ),
     ],
 )
 def test_key_negative_cases(

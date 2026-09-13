@@ -53,3 +53,10 @@ sections 21 and 25 of the specification, including:
 - agreement between the manifest document type and XML root.
 
 These are normative requirements, not optional validation enhancements.
+
+The two HTML Reader entrypoints and the embedded local bootstrap require
+cross-file validation rather than a JSON Schema. Their normative design is in
+[`READER_DELIVERY.md`](../../READER_DELIVERY.md) and the
+[`P2H Package specification`](../../STRUCTURED_DOCUMENT_PACKAGE_SPEC.md).
+Machine-readable schemas do not model duplicated text inside
+`index-local.html`.

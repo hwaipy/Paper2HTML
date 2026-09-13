@@ -3,7 +3,7 @@
   "format": "paper2html-validation-report",
   "format_version": "0.1",
   "valid": false,
-  "validated_at": "2026-08-12T00:00:00Z",
+  "validated_at": "2026-09-13T00:00:00Z",
   "checks": {
     "manifest_schema": "passed",
     "xml_well_formed": "passed",

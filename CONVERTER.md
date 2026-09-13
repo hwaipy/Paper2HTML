@@ -6,7 +6,9 @@ automatic publication-quality reconstruction is solved.
 
 The converter is a repository tool. It does not build a wheel or install a
 standalone command. The reader is a separate tool and is never copied into a
-result package.
+result package. The browser handoff writes `index.html` for HTTP/HTTPS
+hosting and `index-local.html` for local double-click reading, following
+[`READER_DELIVERY.md`](READER_DELIVERY.md).
 
 ## Prerequisites
 
@@ -75,6 +77,12 @@ Useful options:
   use it when a local proxy exposes reserved synthetic DNS addresses. Every
   returned A/AAAA address is still required to be globally routable.
 - `--json` prints the generated validation result.
+- `--reader-base-url URL` overrides the versioned HTTPS directory containing
+  the Reader entrypoints. By default, the Converter reads the selected release,
+  stable URL, and CSS/JavaScript file names from
+  [`reader/releases.json`](reader/releases.json). Query strings, fragments,
+  credentials, and HTTP URLs are rejected so a package cannot silently follow
+  a mutable channel.
 
 ## What the pipeline actually does
 
@@ -93,8 +101,15 @@ Useful options:
 8. Crops reliably bounded figures without their captions, writes the manifest,
    validation report, and exhaustive SHA-256 list, then runs the independent
    validator.
-9. Publishes the completed directory atomically. A failed run does not expose a
+9. Generates the two Reader entrypoints after all normative text and the final
+   validation report are available, then includes both in the exhaustive
+   checksum list.
+10. Publishes the completed directory atomically. A failed run does not expose a
    partial result directory.
+
+`index-local.html` embeds only the UTF-8 text needed by the Reader; binary
+assets remain separate and use relative URLs. The local snapshot intentionally
+excludes `checksums.sha256` to avoid checksum self-reference.
 
 The primary-source SHA-256 determines the UUIDv5 package ID. Element IDs and
 page IDs are assigned deterministically from the reconstructed reading order.

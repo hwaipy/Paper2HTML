@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import mimetypes
 import os
@@ -9,12 +11,13 @@ import shutil
 import subprocess
 import tempfile
 import unicodedata
+import urllib.parse
 import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 from jsonschema import Draft202012Validator, FormatChecker
 from lxml import etree
@@ -68,6 +71,7 @@ TEXT_TAGS = {
 }
 ADDRESSABLE_TAGS = TEXT_TAGS | {"book-part", "fig", "table-wrap"}
 INLINE_ANNOTATION_TAGS = {"bold", "italic", "monospace", "sup", "sub", "underline", "ext-link", "xref"}
+READER_BOOTSTRAP_PROTOCOL = "paper2html-reader-bootstrap/1"
 _ACTIVE_SCHEMA_DIR: ContextVar[Path] = ContextVar("p2h_schema_dir", default=Path())
 
 
@@ -191,6 +195,8 @@ def _scan_filesystem(root: Path, state: State) -> set[str]:
                     path=path.relative_to(root).as_posix(),
                 )
     standard_roots = {
+        "index.html",
+        "index-local.html",
         "manifest.json",
         "checksums.sha256",
         "content/",
@@ -231,6 +237,8 @@ def _safe_package_path(root: Path, value: Any) -> Path | None:
 
 def _check_required(root: Path, files: set[str], state: State) -> None:
     required = {
+        "index.html",
+        "index-local.html",
         "manifest.json",
         "content/document.xml",
         "provenance/pages.jsonl",
@@ -244,8 +252,192 @@ def _check_required(root: Path, files: set[str], state: State) -> None:
             "manifest_schema", "required_file_missing", "Required package file is missing.", path=path
         )
     for path in sorted(files):
-        if path.endswith((".json", ".jsonl", ".xml")) or path == "checksums.sha256":
+        if path.endswith((".html", ".json", ".jsonl", ".xml")) or path == "checksums.sha256":
             inspect_text(root / path, path, state, "manifest_schema")
+
+
+def _parse_reader_entrypoint(root: Path, name: str, state: State) -> tuple[dict[str, Any], str, str] | None:
+    path = root / name
+    text = inspect_text(path, name, state, "manifest_schema") if path.is_file() else None
+    if text is None:
+        return None
+    try:
+        document = etree.fromstring(text.encode("utf-8"), etree.HTMLParser(recover=False))
+    except (etree.ParserError, etree.XMLSyntaxError, ValueError) as exc:
+        state.error("manifest_schema", "reader_entrypoint_html", str(exc), path=name)
+        return None
+    package_meta = cast(list[Any], document.xpath("//meta[@name='paper2html-package']/@content"))
+    styles = cast(list[Any], document.xpath("//link[@rel='stylesheet']/@href"))
+    scripts = cast(list[Any], document.xpath("//script[@src]/@src"))
+    bootstraps = cast(
+        list[etree._Element],
+        document.xpath("//script[@id='paper2html-bootstrap' and @type='application/json']"),
+    )
+    if package_meta != ["./manifest.json"]:
+        state.error(
+            "manifest_schema",
+            "reader_entrypoint_package",
+            "Reader entrypoint must identify ./manifest.json exactly once.",
+            path=name,
+        )
+    if len(styles) != 1 or len(scripts) != 1:
+        state.error(
+            "manifest_schema",
+            "reader_entrypoint_release",
+            "Reader entrypoint must reference exactly one stylesheet and one external script.",
+            path=name,
+        )
+        return None
+    style_url, script_url = str(styles[0]), str(scripts[0])
+    style = urllib.parse.urlsplit(style_url)
+    script = urllib.parse.urlsplit(script_url)
+    style_base = style_url.rsplit("/", 1)[0] if "/" in style_url else ""
+    script_base = script_url.rsplit("/", 1)[0] if "/" in script_url else ""
+    if (
+        style.scheme != "https"
+        or script.scheme != "https"
+        or style.query
+        or style.fragment
+        or script.query
+        or script.fragment
+        or not style.path.endswith("/reader.css")
+        or not script.path.endswith("/reader.js")
+        or style_base != script_base
+    ):
+        state.error(
+            "manifest_schema",
+            "reader_entrypoint_release",
+            "Reader release must be one fixed HTTPS directory containing reader.css and reader.js.",
+            path=name,
+        )
+    if len(bootstraps) != 1 or not bootstraps[0].text:
+        state.error(
+            "manifest_schema",
+            "reader_entrypoint_bootstrap",
+            "Reader entrypoint must contain exactly one JSON bootstrap.",
+            path=name,
+        )
+        return None
+    try:
+        bootstrap = json.loads(bootstraps[0].text)
+    except json.JSONDecodeError as exc:
+        state.error(
+            "manifest_schema",
+            "reader_entrypoint_bootstrap",
+            f"Invalid Reader bootstrap JSON: {exc.msg}",
+            path=name,
+            line=exc.lineno,
+        )
+        return None
+    if not isinstance(bootstrap, dict):
+        state.error(
+            "manifest_schema",
+            "reader_entrypoint_bootstrap",
+            "Reader bootstrap must be an object.",
+            path=name,
+        )
+        return None
+    return bootstrap, style_url, script_url
+
+
+def _reader_snapshot_paths(root: Path, manifest: dict[str, Any], state: State) -> list[str]:
+    paths = [
+        "manifest.json",
+        manifest["document"]["content"],
+        manifest["provenance"]["pages"],
+        manifest["provenance"]["elements"],
+        manifest["provenance"]["omissions"],
+        manifest["validation"],
+    ]
+    annotations = manifest.get("annotations")
+    if annotations:
+        index_path = annotations["index"]
+        paths.append(index_path)
+        index = load_json(root / index_path, index_path, state, "manifest_schema")
+        if isinstance(index, dict) and isinstance(index.get("layers"), list):
+            paths.extend(
+                layer["path"]
+                for layer in index["layers"]
+                if isinstance(layer, dict) and isinstance(layer.get("path"), str)
+            )
+    return sorted(set(paths), key=lambda value: value.encode("utf-8"))
+
+
+def _check_reader_entrypoints(root: Path, manifest: dict[str, Any] | None, state: State) -> None:
+    remote = _parse_reader_entrypoint(root, "index.html", state)
+    local = _parse_reader_entrypoint(root, "index-local.html", state)
+    if remote is None or local is None:
+        return
+    remote_bootstrap, remote_style, remote_script = remote
+    local_bootstrap, local_style, local_script = local
+    if (remote_style, remote_script) != (local_style, local_script):
+        state.error(
+            "manifest_schema",
+            "reader_release_mismatch",
+            "Both entrypoints must reference the same Reader release.",
+        )
+    common = {"protocol": READER_BOOTSTRAP_PROTOCOL, "packageBase": "./"}
+    if remote_bootstrap != {**common, "mode": "http"}:
+        state.error(
+            "manifest_schema",
+            "reader_http_bootstrap",
+            "index.html must contain only the HTTP bootstrap configuration.",
+            path="index.html",
+        )
+    if (
+        set(local_bootstrap) != {"protocol", "packageBase", "mode", "files"}
+        or any(local_bootstrap.get(key) != value for key, value in common.items())
+        or local_bootstrap.get("mode") != "embedded"
+        or not isinstance(local_bootstrap.get("files"), dict)
+    ):
+        state.error(
+            "manifest_schema",
+            "reader_local_bootstrap",
+            "index-local.html has an invalid embedded bootstrap configuration.",
+            path="index-local.html",
+        )
+        return
+    if manifest is None:
+        return
+    files = local_bootstrap["files"]
+    expected = _reader_snapshot_paths(root, manifest, state)
+    actual = sorted(files, key=lambda value: value.encode("utf-8"))
+    if actual != expected:
+        state.error(
+            "manifest_schema",
+            "reader_snapshot_paths",
+            "Local Reader snapshot paths do not exactly match the required text files.",
+            path="index-local.html",
+        )
+        return
+    for package_path in expected:
+        target = _safe_package_path(root, package_path)
+        if target is None or not target.is_file() or not isinstance(files[package_path], str):
+            state.error(
+                "manifest_schema",
+                "reader_snapshot_path",
+                "Local Reader snapshot contains an invalid package path.",
+                path="index-local.html",
+            )
+            continue
+        try:
+            decoded = base64.b64decode(files[package_path], validate=True)
+            decoded.decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError):
+            state.error(
+                "manifest_schema",
+                "reader_snapshot_encoding",
+                "Local Reader snapshot value is not canonical Base64-encoded UTF-8.",
+                path="index-local.html",
+            )
+            continue
+        if base64.b64encode(decoded).decode("ascii") != files[package_path] or decoded != target.read_bytes():
+            state.error(
+                "manifest_schema",
+                "reader_snapshot_mismatch",
+                "Local Reader snapshot differs from its package text file.",
+                path=package_path,
+            )
 
 
 def _check_manifest(root: Path, state: State, schema_dir: Path) -> dict[str, Any] | None:
@@ -1345,6 +1537,7 @@ def validate_package(
         files = _scan_filesystem(root, state)
         _check_required(root, files, state)
         manifest = _check_manifest(root, state, schema_dir)
+        _check_reader_entrypoints(root, manifest, state)
         _check_existing_report(root, state, writing_report)
         checksums = _read_checksums(root, state)
         _check_checksums(root, files, checksums, state, ignore_report_mismatch=writing_report)
@@ -1395,6 +1588,39 @@ def write_report(root: Path, result: ValidationResult) -> None:
         stream.write(payload)
         temporary = Path(stream.name)
     os.replace(temporary, target)
+    local_entrypoint = root / "index-local.html"
+    if local_entrypoint.is_file():
+        local_text = local_entrypoint.read_text(encoding="utf-8")
+        pattern = re.compile(
+            r'(<script id="paper2html-bootstrap" type="application/json">)(.*?)(</script>)',
+            re.DOTALL,
+        )
+        match = pattern.search(local_text)
+        if not match:
+            raise OSError("cannot update validation report in index-local.html bootstrap")
+        bootstrap = json.loads(match.group(2))
+        files = bootstrap.get("files")
+        if not isinstance(files, dict) or "validation/report.json" not in files:
+            raise OSError("index-local.html bootstrap lacks validation/report.json")
+        files["validation/report.json"] = base64.b64encode(target.read_bytes()).decode("ascii")
+        bootstrap_payload = json.dumps(
+            bootstrap,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        local_payload = pattern.sub(
+            lambda found: found.group(1) + bootstrap_payload + found.group(3),
+            local_text,
+            count=1,
+        )
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", newline="\n", dir=local_entrypoint.parent, delete=False
+        ) as stream:
+            stream.write(local_payload)
+            local_temporary = Path(stream.name)
+        os.replace(local_temporary, local_entrypoint)
+        local_entrypoint.chmod(0o644)
     checksum_path = root / "checksums.sha256"
     entries: dict[str, str] = {}
     if checksum_path.exists():
@@ -1403,6 +1629,8 @@ def write_report(root: Path, result: ValidationResult) -> None:
             if match:
                 entries[match.group(2)] = match.group(1)
     entries["validation/report.json"] = sha256_file(target)
+    if local_entrypoint.is_file():
+        entries["index-local.html"] = sha256_file(local_entrypoint)
     content = "".join(
         f"{digest}  {path}\n" for path, digest in sorted(entries.items(), key=lambda x: x[0].encode())
     )

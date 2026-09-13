@@ -86,6 +86,16 @@ metadata; page continuity and PNG geometry; provenance, candidates, regions and
 reading order; resources, MIME and table spans; independent coverage evidence;
 and exhaustive SHA-256 verification.
 
+## Reader entrypoint validation
+
+The package format now specifies `index.html` and `index-local.html`; the
+validator requires both files, verifies their fixed HTTPS Reader release
+reference and bootstrap protocol, rejects unsafe or undeclared embedded paths,
+and requires both files in
+`checksums.sha256`. It does not require `checksums.sha256` inside the local
+snapshot, because that would create a checksum self-reference through
+`index-local.html`. See [`READER_DELIVERY.md`](READER_DELIVERY.md).
+
 If a locked XSD, SaxonC, SchXslt, or another mandatory validation engine cannot
 run, its check is failed and the command returns exit code 2. Such a layer is
 never silently reported as passed.
