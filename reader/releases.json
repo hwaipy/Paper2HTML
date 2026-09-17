@@ -21,8 +21,8 @@
         "script": "reader.js"
       },
       "sha256": {
-        "reader.css": "0a6fb434052bf72a078fb465d80c08a80498cf483ac825485ceaca9fc059b669",
-        "reader.js": "0a3257b14d5226982a54894feb2f31f5ddf593e645834c27c67ad623485ea51d"
+        "reader.css": "334e306607b38ddea86a28c329a77877b707f4b803bf5a403371edfd8f39de57",
+        "reader.js": "d020ea8f1bcf24ce08bb3af28523876351f9b97f3984c2490b0c4bee490dc5bc"
       }
     }
   }
