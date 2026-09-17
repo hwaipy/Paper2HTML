@@ -8,7 +8,6 @@ import { xmlResourcePath } from "../lib/p2h";
 type Props = {
   pkg: P2HPackage;
   activeLayers: Set<string>;
-  onSelect: (id: string) => void;
 };
 
 const XLINK = "http://www.w3.org/1999/xlink";
@@ -24,6 +23,14 @@ function directChildren(node: Element, excluded: string[] = []): Node[] {
 
 function directText(node: Element, selector: string): string {
   return node.querySelector(selector)?.textContent?.trim() || "";
+}
+
+function textWithoutDirectChildren(node: Element, excluded: string[]): string {
+  return directChildren(node, excluded)
+    .map((child) => child.textContent ?? "")
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function documentTitle(xml: XMLDocument): string {
@@ -53,8 +60,14 @@ function AnnotationView({ annotation, renderFragment }: { annotation: Annotation
   );
 }
 
-export function DocumentRenderer({ pkg, activeLayers, onSelect }: Props) {
+export function DocumentRenderer({ pkg, activeLayers }: Props) {
   const annotations = new Map<string, Annotation[]>();
+  const affiliations = new Map(
+    [...pkg.xml.querySelectorAll("aff[id]")].map((affiliation) => [
+      affiliation.id,
+      textWithoutDirectChildren(affiliation, ["label"]),
+    ]),
+  );
   for (const layer of pkg.annotationLayers) {
     if (!activeLayers.has(layer.id)) continue;
     for (const record of layer.records) {
@@ -76,14 +89,12 @@ export function DocumentRenderer({ pkg, activeLayers, onSelect }: Props) {
   const addressable = (element: Element, body: ReactNode, className = ""): ReactNode => {
     const id = element.id;
     const notes = id ? annotations.get(id) : undefined;
-    const clickable = Boolean(id && pkg.provenance.has(id));
     const Wrapper = BLOCK_NAMES.has(element.localName) ? "div" : "span";
     return (
       <Wrapper
         id={id || undefined}
-        className={`${className} ${clickable ? "addressable" : ""}`.trim()}
+        className={className || undefined}
         data-p2h-id={id || undefined}
-        onClick={clickable ? (event) => { event.stopPropagation(); onSelect(id); } : undefined}
       >
         {body}
         {notes?.map((note, index) => <AnnotationView key={`${id}-note-${index}`} annotation={note} renderFragment={renderFragment} />)}
@@ -177,7 +188,15 @@ export function DocumentRenderer({ pkg, activeLayers, onSelect }: Props) {
       case "tex-math": return null;
       case "xref": {
         const rid = element.getAttribute("rid");
-        return <a key={key} href={rid ? `#${rid}` : undefined} className="xref">{content}</a>;
+        if (element.getAttribute("ref-type") !== "aff") {
+          return <a key={key} href={rid ? `#${rid}` : undefined} className="xref">{content}</a>;
+        }
+        const tooltip = (rid ?? "")
+          .split(/\s+/)
+          .map((id) => affiliations.get(id))
+          .filter((name): name is string => Boolean(name))
+          .join("; ");
+        return <sup key={key} className="affiliation-ref" title={tooltip || undefined}><a href={rid ? `#${rid}` : undefined} className="xref">{content}</a></sup>;
       }
       case "ext-link":
       case "uri": {

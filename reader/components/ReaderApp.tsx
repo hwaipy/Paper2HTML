@@ -9,7 +9,6 @@ import {
   localDirectorySource,
   pageBootstrap,
   remoteSource,
-  type ElementProvenance,
   type PackageLoadProgress,
   type PackageSource,
   type P2HPackage,
@@ -82,7 +81,7 @@ function EmptyState({ onLoadUrl, onPick }: { onLoadUrl: (url: string) => void; o
       <section className="welcome-copy">
         <p className="eyebrow">P2H PACKAGE 0.1 READER</p>
         <h1>让文献回到<br />适合阅读的形态。</h1>
-        <p className="welcome-lead">Paper2HTML 阅读器直接呈现结构化 JATS/BITS 正文，同时保留译文、原稿定位与转换质量信息。</p>
+        <p className="welcome-lead">Paper2HTML 阅读器直接呈现结构化 JATS/BITS 正文，同时保留译文与转换质量信息。</p>
       </section>
       <section className="open-card" aria-label="打开文档包">
         <div className="open-card-heading"><span>01</span><h2>打开文档包</h2></div>
@@ -102,43 +101,12 @@ function EmptyState({ onLoadUrl, onPick }: { onLoadUrl: (url: string) => void; o
   );
 }
 
-function EvidencePanel({ pkg, provenance, onClose }: { pkg: P2HPackage; provenance: ElementProvenance; onClose: () => void }) {
-  const [sourceIndex, setSourceIndex] = useState(0);
-  const source = provenance.sources[sourceIndex] ?? provenance.sources[0];
-  if (!source) return null;
-  const imageUrl = pkg.source.resourceUrl(source.page_image);
-  return (
-    <aside className="evidence-panel" aria-label="原稿证据">
-      <header>
-        <div><p>ORIGINAL EVIDENCE</p><h2>{provenance.element_id}</h2></div>
-        <button onClick={onClose} aria-label="关闭原稿证据">×</button>
-      </header>
-      <div className="evidence-meta">
-        <span>{source.source_id}</span><strong>第 {source.physical_page} 页</strong>
-        <span>顺序 {provenance.reading_order}</span>
-      </div>
-      <div className="page-viewer">
-        {/* Package evidence images can be local object URLs, so Next Image cannot optimize them. */}
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        {imageUrl ? <img src={imageUrl} alt={`原稿第 ${source.physical_page} 页`} /> : <div className="missing-page">页面图像未随当前选择载入</div>}
-        {source.regions.map((region, index) => {
-          const [x0, y0, x1, y1] = region.bbox;
-          return <span key={index} className="evidence-box" style={{ left: `${x0 * 100}%`, top: `${y0 * 100}%`, width: `${(x1 - x0) * 100}%`, height: `${(y1 - y0) * 100}%` }} />;
-        })}
-      </div>
-      {provenance.sources.length > 1 && <div className="source-tabs">{provenance.sources.map((item, index) => <button className={sourceIndex === index ? "active" : ""} key={`${item.source_id}-${item.physical_page}`} onClick={() => setSourceIndex(index)}>页 {item.physical_page}</button>)}</div>}
-      <p className="evidence-hint">高亮区域来自 provenance，不参与正文阅读顺序。</p>
-    </aside>
-  );
-}
-
 export default function ReaderApp() {
   const [pkg, setPkg] = useState<P2HPackage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [activeLayers, setActiveLayers] = useState<Set<string>>(new Set());
   const [fontSize, setFontSize] = useState(18);
   const [theme, setTheme] = useState<Theme>("system");
@@ -150,7 +118,7 @@ export default function ReaderApp() {
   const currentSource = useRef<PackageSource | null>(null);
 
   const openSource = async (source: PackageSource) => {
-    setLoading(true); setError(""); setSelectedId(null);
+    setLoading(true); setError("");
     setLoadProgress({ phase: "manifest", loadedBytes: 0, completedFiles: 0, totalFiles: 1 });
     try {
       const loaded = await loadPackage(source, setLoadProgress);
@@ -211,7 +179,6 @@ export default function ReaderApp() {
   }, [pkg]);
 
   const toc = useMemo(() => pkg ? buildToc(pkg.xml) : [], [pkg]);
-  const selected = selectedId && pkg ? pkg.provenance.get(selectedId) : undefined;
   const status = pkg ? statusLabel(pkg) : null;
 
   const chooseDirectory = () => fileInput.current?.click();
@@ -243,7 +210,7 @@ export default function ReaderApp() {
 
   const title = documentTitle(pkg.xml);
   return (
-    <div className={`reader-shell ${selected ? "with-evidence" : ""}`}>
+    <div className="reader-shell">
       <div className="reading-progress" style={{ width: `${progress}%` }} />
       <header className="reader-toolbar">
         <button className="toolbar-icon" onClick={() => setDrawerOpen(true)} aria-label="打开目录">☰</button>
@@ -276,11 +243,10 @@ export default function ReaderApp() {
           </section>
         </>}
         <article className="reading-paper">
-          <DocumentRenderer pkg={pkg} activeLayers={activeLayers} onSelect={setSelectedId} />
+          <DocumentRenderer pkg={pkg} activeLayers={activeLayers} />
         </article>
         <footer className="document-end"><span>END OF DOCUMENT</span><p>{pkg.manifest.package_id}</p></footer>
       </main>
-      {selected && <EvidencePanel key={selected.element_id} pkg={pkg} provenance={selected} onClose={() => setSelectedId(null)} />}
       {error && <div className="toast error-toast" role="alert"><strong>载入失败</strong>{error}<button onClick={() => setError("")}>×</button></div>}
     </div>
   );

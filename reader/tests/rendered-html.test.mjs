@@ -45,6 +45,16 @@ test("shows validation details as a viewport modal", async () => {
   assert.match(css, /\.validation-card \{ position: fixed;/);
 });
 
+test("renders author affiliations as superscript links with resolved tooltips", async () => {
+  const renderer = await readFile(new URL("../components/DocumentRenderer.tsx", import.meta.url), "utf8");
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(renderer, /ref-type["']\) !== ["']aff["']/);
+  assert.match(renderer, /<sup key=\{key\} className="affiliation-ref" title=\{tooltip \|\| undefined\}>/);
+  assert.match(renderer, /textWithoutDirectChildren\(affiliation, \["label"\]\)/);
+  assert.match(css, /\.affiliation-ref \{/);
+  assert.match(css, /\.affiliation-ref \+ \.affiliation-ref::before/);
+});
+
 test("builds the independently hosted Reader release", async () => {
   const catalog = JSON.parse(await readFile(new URL("../releases.json", import.meta.url), "utf8"));
   const releaseDirectory = new URL(`../release/${catalog.default}/`, import.meta.url);
@@ -53,8 +63,11 @@ test("builds the independently hosted Reader release", async () => {
     access(new URL("reader.css", releaseDirectory)),
   ]);
   const css = await readFile(new URL("reader.css", releaseDirectory), "utf8");
+  const script = await readFile(new URL("reader.js", releaseDirectory), "utf8");
   assert.match(css, /url\(\.\/fonts\/KaTeX_Main-Regular\.woff2\)/);
   assert.doesNotMatch(css, /data:font|url\(\/fonts\/|\.woff\)|\.ttf\)/);
+  assert.doesNotMatch(css, /\.evidence-panel|\.addressable/);
+  assert.doesNotMatch(script, /ORIGINAL EVIDENCE|原稿证据/);
   const fonts = await readdir(new URL("fonts/", releaseDirectory));
   assert.ok(fonts.length > 0);
   assert.ok(fonts.every((name) => name.endsWith(".woff2")));

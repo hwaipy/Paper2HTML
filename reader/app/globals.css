@@ -73,7 +73,7 @@ a { color: inherit; }
 }
 .welcome-copy, .open-card, .welcome-footer { position: relative; z-index: 1; }
 .welcome-copy { align-self: center; max-width: 810px; }
-.eyebrow, .toc-panel header p, .layer-controls > p, .evidence-panel header p, .validation-card header p {
+.eyebrow, .toc-panel header p, .layer-controls > p, .validation-card header p {
   margin: 0 0 24px;
   font-size: 11px;
   font-weight: 800;
@@ -156,7 +156,7 @@ a { color: inherit; }
   background: var(--canvas);
 }
 .toc-panel header { display: flex; justify-content: space-between; align-items: start; }
-.toc-panel header button, .evidence-panel header button, .validation-card header button { background: none; border: 0; font-size: 25px; line-height: .8; }
+.toc-panel header button, .validation-card header button { background: none; border: 0; font-size: 25px; line-height: .8; }
 .toc-panel header button { display: none; }
 .toc-panel nav { display: flex; flex-direction: column; }
 .toc-panel nav a { position: relative; padding: 8px 0; color: var(--muted); text-decoration: none; font-size: 13px; line-height: 1.35; }
@@ -171,7 +171,6 @@ a { color: inherit; }
 .layer-controls input { accent-color: var(--ink); }
 
 .reader-main { min-height: 100vh; margin: 66px 0 0 272px; padding: 72px clamp(28px, 6vw, 110px) 100px; transition: margin-right .2s; }
-.with-evidence .reader-main { margin-right: 390px; }
 .reading-paper { max-width: 790px; margin: 0 auto; }
 .p2h-document { font: var(--reader-size)/1.78 var(--serif); letter-spacing: .002em; }
 .document-front { margin-bottom: 5rem; padding-bottom: 3.5rem; border-bottom: 1px solid var(--hairline); }
@@ -189,10 +188,13 @@ a { color: inherit; }
 .p2h-document h3 { margin: 2.4em 0 .65em; font-size: 1.45em; }
 .p2h-document h4 { margin: 2em 0 .55em; font-size: 1.18em; }
 .p2h-document p { margin: 1em 0; }
+.p2h-document .body p, .p2h-document .book-body p { text-align: justify; text-justify: inter-word; }
+.p2h-document .table-wrap p, .p2h-document figcaption p, .p2h-document .footnote p { text-align: left; }
 .p2h-document a { text-decoration-color: color-mix(in srgb, currentColor 30%, transparent); text-underline-offset: 3px; }
 .p2h-document .xref { font-family: var(--sans); font-size: .88em; font-weight: 700; }
-.addressable { cursor: crosshair; border-radius: 3px; transition: background .12s, box-shadow .12s; }
-.addressable:hover { background: color-mix(in srgb, var(--accent) 21%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 21%, transparent); }
+.affiliation-ref { margin-left: .08em; font: 700 .72em/0 var(--sans); vertical-align: super; }
+.affiliation-ref + .affiliation-ref::before { content: ","; color: var(--muted); }
+.affiliation-ref .xref { cursor: help; font-size: inherit; text-decoration: none; }
 .p2h-document figure { margin: 3rem 0; }
 .p2h-document figure img { display: block; width: 100%; max-height: 72vh; object-fit: contain; background: white; }
 .p2h-document figcaption { margin-top: 14px; color: var(--muted); font-size: .85em; line-height: 1.5; }
@@ -223,26 +225,10 @@ a { color: inherit; }
 .validation-message { display: grid; gap: 5px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--hairline); color: var(--muted); }
 .validation-message code { color: var(--danger); }
 
-.evidence-panel { position: fixed; z-index: 70; inset: 66px 0 0 auto; width: 390px; padding: 28px; overflow-y: auto; background: #20221f; color: #eeefe9; border-left: 1px solid #353934; }
-.evidence-panel header { display: flex; justify-content: space-between; }.evidence-panel header p { color: #9da198; margin-bottom: 7px; }.evidence-panel header h2 { margin: 0; font: 700 19px/1 var(--sans); }
-.evidence-panel header button { color: white; }
-.evidence-meta { display: grid; grid-template-columns: 1fr auto; gap: 6px; margin: 24px 0 14px; color: #9da198; font-size: 11px; }
-.evidence-meta strong { color: white; }.evidence-meta span:last-child { grid-column: 1 / -1; }
-.page-viewer { position: relative; background: #111; line-height: 0; }
-.page-viewer img { display: block; width: 100%; height: auto; }
-.evidence-box { position: absolute; border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 21%, transparent); box-shadow: 0 0 0 1px #111; }
-.missing-page { min-height: 330px; display: grid; place-content: center; padding: 30px; color: #9da198; line-height: 1.5; text-align: center; }
-.source-tabs { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 12px; }.source-tabs button { border: 1px solid #4a4f48; background: none; color: #b7bbb3; font-size: 11px; }.source-tabs button.active { border-color: var(--accent); color: var(--accent); }
-.evidence-hint { color: #878b83; font-size: 11px; line-height: 1.5; }
 .document-end { max-width: 790px; margin: 90px auto 0; padding-top: 18px; border-top: 1px solid var(--hairline); display: flex; justify-content: space-between; color: var(--muted); font: 9px/1.4 ui-monospace, monospace; letter-spacing: .1em; }.document-end p { margin: 0; }
 
 .toast { position: fixed; z-index: 200; right: 22px; bottom: 22px; max-width: 430px; display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: start; padding: 16px 18px; background: var(--ink); color: var(--paper); box-shadow: 0 8px 30px #0003; font-size: 13px; }.toast strong { color: #ff8b7c; }.toast button { border: 0; background: none; color: inherit; }
 .drawer-scrim { display: none; }
-
-@media (max-width: 1080px) {
-  .with-evidence .reader-main { margin-right: 0; }
-  .evidence-panel { width: min(430px, 92vw); box-shadow: -20px 0 50px #0005; }
-}
 
 @media (max-width: 780px) {
   .welcome-shell { grid-template-columns: 1fr; grid-template-rows: auto auto auto; padding: 34px 22px; gap: 50px; }
@@ -259,6 +245,6 @@ a { color: inherit; }
 }
 
 @media print {
-  .reader-toolbar, .toc-panel, .reading-progress, .evidence-panel, .validation-card, .validation-scrim, .document-end { display: none !important; }
-  .reader-main { margin: 0 !important; padding: 0; }.reading-paper { max-width: none; }.addressable:hover { background: none; box-shadow: none; }
+  .reader-toolbar, .toc-panel, .reading-progress, .validation-card, .validation-scrim, .document-end { display: none !important; }
+  .reader-main { margin: 0 !important; padding: 0; }.reading-paper { max-width: none; }
 }
